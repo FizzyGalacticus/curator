@@ -1,0 +1,22 @@
+services:
+  reddit-curator:
+    build: .
+    image: reddit-curator:latest
+    container_name: reddit-curator
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./downloads:/app/downloads
+    restart: unless-stopped
+    environment:
+      - TZ=America/Los_Angeles
+      - REDDIT_CURATOR_DATA_DIR=/app/data
+      - REDDIT_CURATOR_DOWNLOAD_DIR=/app/downloads
+      - REDDIT_CURATOR_PORT=8080
+    healthcheck:
+      test: ["CMD", "/reddit-curator", "-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

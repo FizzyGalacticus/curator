@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reddit Media Curator</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Tab bar -->
+    <nav class="tab-bar">
+      <button class="tab-btn active" data-tab="media">
+        <span class="tab-icon">⊞</span> Media
+      </button>
+      <button class="tab-btn" data-tab="config">
+        <span class="tab-icon">⚙</span> Config
+      </button>
+    </nav>
+
+    <!-- ── Media Tab ── -->
+    <div id="tab-media" class="tab-content active">
+      <div class="toolbar">
+        <div class="filter-group">
+          <button class="filter-btn active" data-filter="all">All</button>
+          <button class="filter-btn" data-filter="favorites">★ Favorites</button>
+          <button class="filter-btn" data-filter="non-favorites">Hide Favorites</button>
+        </div>
+        <div class="toolbar-right">
+          <span id="post-count" class="post-count"></span>
+          <button id="refresh-btn" class="icon-btn" title="Refresh now">↻</button>
+        </div>
+      </div>
+
+      <div id="masonry-grid" class="masonry-grid"></div>
+      <div id="media-empty" class="empty-state" hidden>
+        <div class="empty-icon">🖼</div>
+        <p>No media yet. Add subreddits in the <strong>Config</strong> tab.</p>
+      </div>
+      <div id="media-loading" class="loading-state" hidden>
+        <div class="spinner"></div>
+        <p>Loading…</p>
+      </div>
+    </div>
+
+    <!-- ── Config Tab ── -->
+    <div id="tab-config" class="tab-content">
+      <div class="config-section">
+        <h2>Subreddits</h2>
+        <ul id="subreddit-list" class="subreddit-list"></ul>
+        <form id="add-subreddit-form" class="add-form">
+          <input id="subreddit-input" type="text" placeholder="e.g. pics" autocomplete="off" spellcheck="false">
+          <button type="submit" class="btn-primary">Add</button>
+        </form>
+      </div>
+
+      <div class="config-section">
+        <h2>Settings</h2>
+        <form id="settings-form" class="settings-form">
+          <label>
+            <span>Check interval</span>
+            <input id="cfg-interval" type="text" placeholder="30m">
+            <small>Go duration (e.g. 15m, 1h, 2h30m)</small>
+          </label>
+          <label>
+            <span>Download directory</span>
+            <input id="cfg-download-dir" type="text" placeholder="/app/downloads">
+            <small>Where favorited media is saved inside the container</small>
+          </label>
+          <label>
+            <span>Max post age (days)</span>
+            <input id="cfg-max-age" type="number" min="0" placeholder="30">
+            <small>Non-favorited posts older than this are pruned (0 = never)</small>
+          </label>
+          <label>
+            <span>Imgur Client ID <em style="font-weight:400;color:var(--text-muted)">(optional)</em></span>
+            <input id="cfg-imgur-client-id" type="text" placeholder="e.g. abc123def456">
+            <small>Enables full Imgur album support. Free — register at <strong>api.imgur.com/oauth2/addclient</strong> (select "Anonymous usage")</small>
+          </label>
+          <button type="submit" class="btn-primary">Save Settings</button>
+          <span id="settings-saved" class="save-indicator" hidden>✓ Saved</span>
+        </form>
+      </div>
+
+      <div class="config-section">
+        <h2>Status</h2>
+        <div id="status-panel" class="status-panel"></div>
+        <button id="refresh-now-btn" class="btn-secondary">Check subreddits now</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Full-page Viewer ── -->
+  <div id="viewer" class="viewer" hidden aria-modal="true" role="dialog">
+    <div class="viewer-backdrop" id="viewer-backdrop"></div>
+    <div class="viewer-shell">
+      <!-- Top bar -->
+      <div class="viewer-top">
+        <div class="viewer-meta">
+          <span id="viewer-subreddit" class="viewer-subreddit"></span>
+          <span id="viewer-title" class="viewer-title"></span>
+        </div>
+        <div class="viewer-top-actions">
+          <button id="viewer-fav-btn" class="viewer-star" title="Toggle favorite">☆</button>
+          <a id="viewer-reddit-link" class="viewer-reddit-link" target="_blank" rel="noopener" title="Open on Reddit">↗</a>
+          <button id="viewer-close" class="viewer-close" title="Close (Esc)">✕</button>
+        </div>
+      </div>
+
+      <!-- Media area -->
+      <div class="viewer-media-wrap" id="viewer-media-wrap">
+        <div id="viewer-media" class="viewer-media"></div>
+
+        <!-- Gallery prev/next (left/right) -->
+        <button id="viewer-media-prev" class="viewer-nav viewer-nav-left" hidden title="Previous image (←)">❮</button>
+        <button id="viewer-media-next" class="viewer-nav viewer-nav-right" hidden title="Next image (→)">❯</button>
+      </div>
+
+      <!-- Gallery dots indicator -->
+      <div id="viewer-dots" class="viewer-dots"></div>
+
+      <!-- Post prev/next (up/down) -->
+      <div class="viewer-post-nav">
+        <button id="viewer-post-prev" class="viewer-post-btn" title="Previous post (↑)">▲ Prev post</button>
+        <button id="viewer-post-next" class="viewer-post-btn" title="Next post (↓)">▼ Next post</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
