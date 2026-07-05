@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const redditUserAgent = "reddit-curator:v1.0 (self-hosted media curator)"
+const redditUserAgent = "curator:v1.0 (self-hosted media curator)"
 
 // httpDoer abstracts *http.Client so tests can inject a stub transport.
 type httpDoer interface {
@@ -173,9 +173,10 @@ type redditPostData struct {
 }
 
 // FetchNewPosts retrieves posts from a subreddit (or combined "a+b+c" multireddit)
-// published after `since`. imgurClientID is optional; when set, Imgur albums are
-// fully expanded.
-func (c *RedditClient) FetchNewPosts(subreddit string, since time.Time, imgurClientID string) ([]Post, error) {
+// published after `since`. creds.ImgurClientID is optional; when set, Imgur
+// albums are fully expanded.
+func (c *RedditClient) FetchNewPosts(subreddit string, since time.Time, creds FetchCredentials) ([]Post, error) {
+	imgurClientID := creds.ImgurClientID
 	url := fmt.Sprintf("%s/r/%s/new.rss?limit=100", c.baseURL, subreddit)
 
 	feed, err := c.fetchRSSFeed(url)
@@ -274,6 +275,7 @@ func (c *RedditClient) parsePost(d redditPostData, imgurClientID string) (Post, 
 
 	return Post{
 		ID:           d.ID,
+		Source:       SourceReddit,
 		Subreddit:    d.Subreddit,
 		Title:        d.Title,
 		Author:       d.Author,
@@ -811,6 +813,7 @@ func (c *RedditClient) parseRSSEntry(e atomEntry, imgurClientID string) (Post, b
 
 	return Post{
 		ID:           postID,
+		Source:       SourceReddit,
 		Subreddit:    e.Category.Term,
 		Title:        e.Title,
 		Author:       strings.TrimPrefix(e.Author.Name, "/u/"),

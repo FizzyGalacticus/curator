@@ -20,20 +20,20 @@ func main() {
 	}
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Println("Starting Reddit Media Curator")
+	log.Println("Starting Curator")
 
-	dataDir := os.Getenv("REDDIT_CURATOR_DATA_DIR")
+	dataDir := os.Getenv("CURATOR_DATA_DIR")
 	if dataDir == "" {
 		dataDir = "/app/data"
 	}
 
-	downloadDir := os.Getenv("REDDIT_CURATOR_DOWNLOAD_DIR")
+	downloadDir := os.Getenv("CURATOR_DOWNLOAD_DIR")
 	if downloadDir == "" {
 		downloadDir = "/app/downloads"
 	}
 
 	envPort := 0
-	if portStr := os.Getenv("REDDIT_CURATOR_PORT"); portStr != "" {
+	if portStr := os.Getenv("CURATOR_PORT"); portStr != "" {
 		if p, err := strconv.Atoi(portStr); err == nil {
 			envPort = p
 		}
@@ -120,14 +120,14 @@ func main() {
 		log.Println("Shutdown timeout, forcing exit")
 	}
 
-	log.Println("Reddit Media Curator stopped")
+	log.Println("Curator stopped")
 }
 
 // doHealthCheck makes a single GET /api/status request and exits 0/1.
 // Used by the Docker HEALTHCHECK so no shell utilities are needed in scratch.
 func doHealthCheck() {
 	port := 8080
-	if p, err := strconv.Atoi(os.Getenv("REDDIT_CURATOR_PORT")); err == nil && p > 0 {
+	if p, err := strconv.Atoi(os.Getenv("CURATOR_PORT")); err == nil && p > 0 {
 		port = p
 	}
 	client := &http.Client{Timeout: 5 * time.Second}

@@ -30,8 +30,8 @@ func TestIsDirectImageURL(t *testing.T) {
 		"https://cdn.example.com/img.png",
 		"https://example.com/anim.gif",
 		"https://example.com/pic.webp",
-		"https://example.com/img.JPG",                // uppercase
-		"https://example.com/img.jpg?v=123",          // query string stripped
+		"https://example.com/img.JPG",       // uppercase
+		"https://example.com/img.jpg?v=123", // query string stripped
 	}
 	no := []string{
 		"https://www.reddit.com/r/pics",
@@ -203,7 +203,7 @@ func TestExtractMedia_Gallery(t *testing.T) {
 			"img1": {
 				Status: "valid",
 				E:      "Image",
-				S:      struct {
+				S: struct {
 					X   int    `json:"x"`
 					Y   int    `json:"y"`
 					U   string `json:"u"`
@@ -214,7 +214,7 @@ func TestExtractMedia_Gallery(t *testing.T) {
 			"img2": {
 				Status: "valid",
 				E:      "Image",
-				S:      struct {
+				S: struct {
 					X   int    `json:"x"`
 					Y   int    `json:"y"`
 					U   string `json:"u"`
@@ -325,7 +325,7 @@ func TestExtractMedia_SingleImage_MP4Variant(t *testing.T) {
 		PostHint: "image",
 		URL:      "https://i.redd.it/anim.gif",
 		Preview: &struct {
-			Images []redditPreviewImage `json:"images"`
+			Images             []redditPreviewImage `json:"images"`
 			RedditVideoPreview *struct {
 				FallbackURL string `json:"fallback_url"`
 				Width       int    `json:"width"`
@@ -382,7 +382,7 @@ func TestExtractMedia_RichVideo_RedditPreview(t *testing.T) {
 		PostHint: "rich:video",
 		URL:      "https://www.redgifs.com/watch/somethingneat",
 		Preview: &struct {
-			Images []redditPreviewImage `json:"images"`
+			Images             []redditPreviewImage `json:"images"`
 			RedditVideoPreview *struct {
 				FallbackURL string `json:"fallback_url"`
 				Width       int    `json:"width"`
@@ -475,8 +475,8 @@ func TestExtractMedia_RichVideo_OEmbedFallback(t *testing.T) {
 				ThumbnailHeight int    `json:"thumbnail_height,omitempty"`
 				ProviderName    string `json:"provider_name,omitempty"`
 			}{
-				ThumbnailURL:   "https://cdn.streamable.com/thumb.jpg",
-				ThumbnailWidth: 1280,
+				ThumbnailURL:    "https://cdn.streamable.com/thumb.jpg",
+				ThumbnailWidth:  1280,
 				ThumbnailHeight: 720,
 			},
 		},
@@ -618,7 +618,7 @@ func TestFetchNewPosts_MockServer(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestRedditClient(srv.URL, "", "")
-	posts, err := c.FetchNewPosts("pics", time.Time{}, "")
+	posts, err := c.FetchNewPosts("pics", time.Time{}, FetchCredentials{})
 	if err != nil {
 		t.Fatalf("FetchNewPosts: %v", err)
 	}
@@ -633,6 +633,9 @@ func TestFetchNewPosts_MockServer(t *testing.T) {
 	}
 	if posts[0].Author != "testuser" {
 		t.Errorf("unexpected author: %s", posts[0].Author)
+	}
+	if posts[0].Source != SourceReddit {
+		t.Errorf("want Source=%q, got %q", SourceReddit, posts[0].Source)
 	}
 }
 
@@ -662,7 +665,7 @@ func TestFetchNewPosts_SinceFilter(t *testing.T) {
 
 	c := newTestRedditClient(srv.URL, "", "")
 	since := now.Add(-3 * time.Hour)
-	posts, err := c.FetchNewPosts("pics", since, "")
+	posts, err := c.FetchNewPosts("pics", since, FetchCredentials{})
 	if err != nil {
 		t.Fatalf("FetchNewPosts: %v", err)
 	}

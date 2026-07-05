@@ -11,7 +11,7 @@ COPY static ./static
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -a \
     -ldflags "-extldflags '-static' -s -w" \
-    -o reddit-curator .
+    -o curator .
 
 # ── Stage 2: CA certificates ──────────────────────────────────────────────────
 FROM alpine:3.19 AS certs
@@ -23,12 +23,12 @@ FROM scratch
 # CA bundle for HTTPS to Reddit, RedGifs, Imgur, etc.
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-COPY --from=builder /build/reddit-curator /reddit-curator
+COPY --from=builder /build/curator /curator
 
 EXPOSE 8080
 
 # Health check runs the binary itself — no shell or wget needed in scratch.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD ["/reddit-curator", "-health"]
+    CMD ["/curator", "-health"]
 
-CMD ["/reddit-curator"]
+CMD ["/curator"]

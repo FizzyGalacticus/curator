@@ -1,3 +1,3 @@
-module reddit-curator
+module curator
 
 go 1.26

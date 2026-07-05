@@ -2,46 +2,102 @@
 
 // ── State ──────────────────────────────────────────────────────────────────
 const state = {
+  view: 'home',            // 'home' | 'list' | 'settings'
+  currentListId: null,
+  currentList: null,        // {id, name, subreddits}
+  lists: [],                // homepage summaries
   posts: [],
-  favorites: {},    // post_id -> true
-  filter: 'all',   // 'all' | 'favorites' | 'non-favorites'
-  config: null,
+  favorites: {},             // post_id -> true
+  filter: 'all',            // 'all' | 'favorites' | 'non-favorites'
   status: null,
+  settings: null,            // global settings (check_interval, download_dir, ...)
+  videoUnmuted: false,       // in-memory only: resets to false on page reload/refresh
   viewer: {
     active: false,
-    postIndex: -1,   // index into filteredPosts()
+    postIndex: -1,           // index into filteredPosts()
     mediaIndex: 0,
   },
 };
 
 // ── API ───────────────────────────────────────────────────────────────────
-async function apiFetch(path, opts = {}) {
+const apiFetch = async (path, opts = {}) => {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
   const json = await res.json();
   if (!json.success) throw new Error(json.message || `HTTP ${res.status}`);
   return json.data;
-}
+};
 
 const api = {
-  getPosts: (filter, subreddit) => {
+  getLists: () => apiFetch('/api/lists'),
+  createList: (name, subreddits) => apiFetch('/api/lists', { method: 'POST', body: JSON.stringify({ name, subreddits }) }),
+  getList: (listId) => apiFetch(`/api/lists/${listId}`),
+  renameList: (listId, name) => apiFetch(`/api/lists/${listId}`, { method: 'PUT', body: JSON.stringify({ name }) }),
+  deleteList: (listId) => apiFetch(`/api/lists/${listId}`, { method: 'DELETE' }),
+  getPosts: (listId, filter, subreddit) => {
     const params = new URLSearchParams();
     if (filter && filter !== 'all') params.set('filter', filter);
     if (subreddit) params.set('subreddit', subreddit);
     const q = params.toString();
-    return apiFetch('/api/posts' + (q ? '?' + q : ''));
+    return apiFetch(`/api/lists/${listId}/posts` + (q ? '?' + q : ''));
   },
-  toggleFavorite: (id) => apiFetch(`/api/posts/${id}/favorite`, { method: 'POST' }),
-  getConfig: () => apiFetch('/api/config'),
-  updateConfig: (data) => apiFetch('/api/config', { method: 'PUT', body: JSON.stringify(data) }),
-  addSubreddit: (name) => apiFetch('/api/subreddits', { method: 'POST', body: JSON.stringify({ name }) }),
-  removeSubreddit: (name) => apiFetch(`/api/subreddits/${name}`, { method: 'DELETE' }),
-  refresh: () => apiFetch('/api/refresh', { method: 'POST' }),
-  getStatus: () => apiFetch('/api/status'),
+  toggleFavorite: (listId, postId) => apiFetch(`/api/lists/${listId}/posts/${postId}/favorite`, { method: 'POST' }),
+  addSubredditToList: (listId, name) => apiFetch(`/api/lists/${listId}/subreddits`, { method: 'POST', body: JSON.stringify({ name }) }),
+  removeSubredditFromList: (listId, name) => apiFetch(`/api/lists/${listId}/subreddits/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  addFlickrGroupToList: (listId, name) => apiFetch(`/api/lists/${listId}/flickr-groups`, { method: 'POST', body: JSON.stringify({ name }) }),
+  removeFlickrGroupFromList: (listId, name) => apiFetch(`/api/lists/${listId}/flickr-groups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  addLemmyCommunityToList: (listId, name) => apiFetch(`/api/lists/${listId}/lemmy-communities`, { method: 'POST', body: JSON.stringify({ name }) }),
+  removeLemmyCommunityFromList: (listId, name) => apiFetch(`/api/lists/${listId}/lemmy-communities/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  refreshList: (listId) => apiFetch(`/api/lists/${listId}/refresh`, { method: 'POST' }),
+  getListStatus: (listId) => apiFetch(`/api/lists/${listId}/status`),
+  getSettings: () => apiFetch('/api/config'),
+  updateSettings: (data) => apiFetch('/api/config', { method: 'PUT', body: JSON.stringify(data) }),
 };
 
+// ── Identifier editors (Subreddits / Flickr Groups / Lemmy Communities) ────
+// The three source types share an identical add/remove/list UI, differing
+// only in API endpoint, display prefix, and input normalization.
+const identifierEditors = [
+  {
+    source: 'reddit',
+    listKey: 'subreddits',
+    ulId: 'subreddit-list',
+    formId: 'add-subreddit-form',
+    inputId: 'subreddit-input',
+    displayName: (name) => 'r/' + name,
+    normalize: (raw) => raw.trim().toLowerCase().replace(/^r\//, ''),
+    add: (listId, name) => api.addSubredditToList(listId, name),
+    remove: (listId, name) => api.removeSubredditFromList(listId, name),
+    confirmRemove: (name) => `Remove r/${name}? Non-favorited posts from this subreddit will be deleted.`,
+  },
+  {
+    source: 'flickr',
+    listKey: 'flickr_groups',
+    ulId: 'flickr-group-list',
+    formId: 'add-flickr-group-form',
+    inputId: 'flickr-group-input',
+    displayName: (name) => 'flickr/' + name,
+    normalize: (raw) => raw.trim(),
+    add: (listId, name) => api.addFlickrGroupToList(listId, name),
+    remove: (listId, name) => api.removeFlickrGroupFromList(listId, name),
+    confirmRemove: (name) => `Remove Flickr group "${name}"? Non-favorited posts from it will be deleted.`,
+  },
+  {
+    source: 'lemmy',
+    listKey: 'lemmy_communities',
+    ulId: 'lemmy-community-list',
+    formId: 'add-lemmy-community-form',
+    inputId: 'lemmy-community-input',
+    displayName: (name) => '!' + name,
+    normalize: (raw) => raw.trim().toLowerCase().replace(/^!/, ''),
+    add: (listId, name) => api.addLemmyCommunityToList(listId, name),
+    remove: (listId, name) => api.removeLemmyCommunityFromList(listId, name),
+    confirmRemove: (name) => `Remove Lemmy community "!${name}"? Non-favorited posts from it will be deleted.`,
+  },
+];
+
 // ── Helpers ───────────────────────────────────────────────────────────────
-function filteredPosts() {
-  let posts = state.posts.slice();
+const filteredPosts = () => {
+  const posts = state.posts.slice();
   // The API already sorts (favorites first, then newest) but we re-apply here
   // so client-side favorite toggles are reflected instantly without a round-trip.
   posts.sort((a, b) => {
@@ -51,15 +107,36 @@ function filteredPosts() {
     return new Date(b.created_at) - new Date(a.created_at);
   });
 
-  if (state.filter === 'favorites') return posts.filter(p => state.favorites[p.id]);
-  if (state.filter === 'non-favorites') return posts.filter(p => !state.favorites[p.id]);
+  if (state.filter === 'favorites') return posts.filter((p) => state.favorites[p.id]);
+  if (state.filter === 'non-favorites') return posts.filter((p) => !state.favorites[p.id]);
   return posts;
-}
+};
 
-function isFav(id) { return !!state.favorites[id]; }
+const isFav = (id) => !!state.favorites[id];
+
+// sourcePrefix renders a post's origin the way each platform conventionally
+// refers to it: "r/name" for Reddit, "flickr/name" for a Flickr group, and
+// "!name" for a Lemmy community (Lemmy's own community-reference syntax).
+const sourcePrefix = (post) => {
+  if (post.source === 'flickr') return 'flickr/' + post.subreddit;
+  if (post.source === 'lemmy') return '!' + post.subreddit;
+  return 'r/' + post.subreddit;
+};
+
+// ── View switching ────────────────────────────────────────────────────────
+const showView = (view) => {
+  document.getElementById('view-home').hidden = view !== 'home';
+  document.getElementById('view-settings').hidden = view !== 'settings';
+  document.getElementById('view-list').hidden = view !== 'list';
+};
+
+const showTab = (tab) => {
+  document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-content').forEach((c) => c.classList.toggle('active', c.id === 'tab-' + tab));
+};
 
 // ── Masonry Grid ──────────────────────────────────────────────────────────
-function renderGrid() {
+const renderGrid = () => {
   const grid = document.getElementById('masonry-grid');
   const empty = document.getElementById('media-empty');
   const loading = document.getElementById('media-loading');
@@ -82,9 +159,9 @@ function renderGrid() {
     const el = buildTile(post, idx);
     grid.appendChild(el);
   });
-}
+};
 
-function buildTile(post, postIndex) {
+const buildTile = (post, postIndex) => {
   const item = post.media_items[0];
   const fav = isFav(post.id);
   const isMulti = post.media_items.length > 1;
@@ -160,7 +237,7 @@ function buildTile(post, postIndex) {
   footer.className = 'tile-footer';
   const sub = document.createElement('span');
   sub.className = 'tile-sub';
-  sub.textContent = 'r/' + post.subreddit;
+  sub.textContent = sourcePrefix(post);
   const title = document.createElement('span');
   title.className = 'tile-title';
   title.textContent = post.title;
@@ -172,10 +249,10 @@ function buildTile(post, postIndex) {
   div.addEventListener('click', () => openViewer(postIndex));
 
   return div;
-}
+};
 
 // ── Favorite toggling ─────────────────────────────────────────────────────
-async function handleToggleFavorite(postId, starEl) {
+const handleToggleFavorite = async (postId, starEl) => {
   // Optimistic update
   const wasF = isFav(postId);
   state.favorites[postId] = !wasF;
@@ -184,7 +261,7 @@ async function handleToggleFavorite(postId, starEl) {
   updateStarEls(postId);
 
   try {
-    const data = await api.toggleFavorite(postId);
+    const data = await api.toggleFavorite(state.currentListId, postId);
     state.favorites[postId] = data.favorited;
   } catch (e) {
     // Revert on error
@@ -193,12 +270,12 @@ async function handleToggleFavorite(postId, starEl) {
   }
   renderGrid();
   updateStarEls(postId);
-}
+};
 
-function updateStarEls(postId) {
+const updateStarEls = (postId) => {
   const fav = isFav(postId);
   // Grid tiles
-  document.querySelectorAll(`[data-post-id="${postId}"] .tile-star`).forEach(el => {
+  document.querySelectorAll(`[data-post-id="${postId}"] .tile-star`).forEach((el) => {
     el.classList.toggle('favorited', fav);
     el.textContent = fav ? '★' : '☆';
   });
@@ -212,10 +289,10 @@ function updateStarEls(postId) {
       btn.textContent = fav ? '★' : '☆';
     }
   }
-}
+};
 
 // ── Viewer ────────────────────────────────────────────────────────────────
-function openViewer(postIndex, mediaIndex = 0) {
+const openViewer = (postIndex, mediaIndex = 0) => {
   const posts = filteredPosts();
   if (postIndex < 0 || postIndex >= posts.length) return;
 
@@ -228,16 +305,16 @@ function openViewer(postIndex, mediaIndex = 0) {
   document.body.style.overflow = 'hidden';
 
   renderViewerContent();
-}
+};
 
-function closeViewer() {
+const closeViewer = () => {
   state.viewer.active = false;
   document.getElementById('viewer').hidden = true;
   document.body.style.overflow = '';
   stopAllViewerMedia();
-}
+};
 
-function renderViewerContent() {
+const renderViewerContent = () => {
   const posts = filteredPosts();
   const post = posts[state.viewer.postIndex];
   if (!post) { closeViewer(); return; }
@@ -247,7 +324,7 @@ function renderViewerContent() {
   const isMulti = post.media_items.length > 1;
 
   // Meta
-  document.getElementById('viewer-subreddit').textContent = 'r/' + post.subreddit;
+  document.getElementById('viewer-subreddit').textContent = sourcePrefix(post);
   document.getElementById('viewer-title').textContent = post.title;
   document.getElementById('viewer-reddit-link').href = post.permalink;
 
@@ -285,12 +362,15 @@ function renderViewerContent() {
     const video = document.createElement('video');
     video.src = item.url;
     video.autoplay = true;
-    video.muted = true;
+    video.muted = !state.videoUnmuted;
     video.loop = true;
     video.controls = true;
     video.playsInline = true;
     video.style.maxWidth = '100%';
     video.style.maxHeight = '100%';
+    video.addEventListener('volumechange', () => {
+      state.videoUnmuted = !video.muted;
+    });
     mediaDiv.appendChild(video);
     video.play().catch(() => {});
   } else if (item.type === 'gif') {
@@ -304,14 +384,14 @@ function renderViewerContent() {
     img.alt = post.title;
     mediaDiv.appendChild(img);
   }
-}
+};
 
-function stopAllViewerMedia() {
+const stopAllViewerMedia = () => {
   const mediaDiv = document.getElementById('viewer-media');
-  mediaDiv.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
-}
+  mediaDiv.querySelectorAll('video').forEach((v) => { v.pause(); v.src = ''; });
+};
 
-function renderDots(post, currentIndex) {
+const renderDots = (post, currentIndex) => {
   const dotsDiv = document.getElementById('viewer-dots');
   dotsDiv.innerHTML = '';
   if (post.media_items.length <= 1) return;
@@ -322,9 +402,9 @@ function renderDots(post, currentIndex) {
     dot.addEventListener('click', () => navigateMedia(i - state.viewer.mediaIndex));
     dotsDiv.appendChild(dot);
   });
-}
+};
 
-function navigateMedia(delta) {
+const navigateMedia = (delta) => {
   const posts = filteredPosts();
   const post = posts[state.viewer.postIndex];
   if (!post) return;
@@ -333,21 +413,21 @@ function navigateMedia(delta) {
   if (newIndex < 0 || newIndex >= post.media_items.length) return;
   state.viewer.mediaIndex = newIndex;
   renderViewerContent();
-}
+};
 
-function navigatePost(delta) {
+const navigatePost = (delta) => {
   const posts = filteredPosts();
   const newIndex = state.viewer.postIndex + delta;
   if (newIndex < 0 || newIndex >= posts.length) return;
   state.viewer.postIndex = newIndex;
   state.viewer.mediaIndex = 0;
   renderViewerContent();
-}
+};
 
 // ── Swipe / touch handling ────────────────────────────────────────────────
 let touchStart = null;
 
-function setupSwipe(el) {
+const setupSwipe = (el) => {
   el.addEventListener('touchstart', (e) => {
     touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() };
   }, { passive: true });
@@ -371,7 +451,7 @@ function setupSwipe(el) {
       else navigatePost(-1);         // swipe down → prev post
     }
   }, { passive: true });
-}
+};
 
 // ── Keyboard ─────────────────────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
@@ -392,27 +472,120 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// ── Config tab ────────────────────────────────────────────────────────────
-function renderSubredditList() {
-  const ul = document.getElementById('subreddit-list');
-  const subs = state.config?.subreddits || [];
+// ── Home view (list of curation lists) ───────────────────────────────────
+const buildListCard = (list) => {
+  const card = document.createElement('div');
+  card.className = 'list-card';
 
-  if (subs.length === 0) {
-    ul.innerHTML = '<li style="color:var(--text-muted);font-size:13px;padding:8px 0">No subreddits yet.</li>';
+  const body = document.createElement('div');
+  body.className = 'list-card-body';
+  body.addEventListener('click', () => navigate(`#/list/${list.id}`));
+
+  const name = document.createElement('div');
+  name.className = 'list-card-name';
+  name.textContent = list.name;
+
+  const meta = document.createElement('div');
+  meta.className = 'list-card-meta';
+  const subCount = list.subreddits.length;
+  meta.textContent = `${subCount} subreddit${subCount !== 1 ? 's' : ''} · ${list.post_count} post${list.post_count !== 1 ? 's' : ''} · ${list.favorite_count} ★`;
+
+  body.appendChild(name);
+  body.appendChild(meta);
+
+  const actions = document.createElement('div');
+  actions.className = 'list-card-actions';
+
+  const renameBtn = document.createElement('button');
+  renameBtn.className = 'btn-icon-sm';
+  renameBtn.textContent = 'Rename';
+  renameBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleRenameList(list.id, list.name);
+  });
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'btn-icon-sm danger';
+  deleteBtn.textContent = 'Delete';
+  deleteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleDeleteList(list.id, list.name);
+  });
+
+  actions.appendChild(renameBtn);
+  actions.appendChild(deleteBtn);
+
+  card.appendChild(body);
+  card.appendChild(actions);
+  return card;
+};
+
+const renderHome = () => {
+  const grid = document.getElementById('list-cards');
+  const empty = document.getElementById('lists-empty');
+  grid.innerHTML = '';
+
+  if (state.lists.length === 0) {
+    empty.hidden = false;
+    return;
+  }
+
+  empty.hidden = true;
+  state.lists.forEach((list) => grid.appendChild(buildListCard(list)));
+};
+
+const handleCreateList = async (name, subredditsRaw) => {
+  const subreddits = subredditsRaw
+    .split(/[,\n]/)
+    .map((s) => s.trim().toLowerCase().replace(/^r\//, ''))
+    .filter(Boolean);
+
+  await api.createList(name, subreddits);
+  await showHome();
+};
+
+const handleRenameList = async (listId, currentName) => {
+  const name = prompt('Rename list', currentName);
+  if (!name || !name.trim() || name.trim() === currentName) return;
+  try {
+    await api.renameList(listId, name.trim());
+    await showHome();
+  } catch (e) {
+    alert('Failed to rename list: ' + e.message);
+  }
+};
+
+const handleDeleteList = async (listId, name) => {
+  if (!confirm(`Delete "${name}"? ALL posts and favorites in this list will be permanently deleted. This cannot be undone.`)) return;
+  try {
+    await api.deleteList(listId);
+    await showHome();
+  } catch (e) {
+    alert('Failed to delete list: ' + e.message);
+  }
+};
+
+// ── List view: Config tab (subreddits / flickr groups / lemmy communities) ─
+const renderIdentifierList = (editor) => {
+  const ul = document.getElementById(editor.ulId);
+  const names = state.currentList?.[editor.listKey] || [];
+
+  if (names.length === 0) {
+    ul.innerHTML = '<li style="color:var(--text-muted);font-size:13px;padding:8px 0">None yet.</li>';
     return;
   }
 
   ul.innerHTML = '';
-  subs.forEach(name => {
+  names.forEach((name) => {
     const li = document.createElement('li');
     li.className = 'subreddit-item';
 
     const left = document.createElement('div');
     const nameEl = document.createElement('span');
     nameEl.className = 'subreddit-name';
-    nameEl.textContent = 'r/' + name;
+    nameEl.textContent = editor.displayName(name);
 
-    const lastChecked = state.status?.last_checked?.[name];
+    const lastChecked = state.status?.last_checked?.[editor.source]?.[name];
     const meta = document.createElement('span');
     meta.className = 'subreddit-meta';
     meta.textContent = lastChecked && lastChecked !== 'never'
@@ -427,28 +600,30 @@ function renderSubredditList() {
     const delBtn = document.createElement('button');
     delBtn.className = 'btn-icon-sm danger';
     delBtn.textContent = 'Remove';
-    delBtn.addEventListener('click', () => handleRemoveSubreddit(name));
+    delBtn.addEventListener('click', () => handleRemoveIdentifier(editor, name));
     actions.appendChild(delBtn);
 
     li.appendChild(left);
     li.appendChild(actions);
     ul.appendChild(li);
   });
-}
+};
 
-async function handleRemoveSubreddit(name) {
-  if (!confirm(`Remove r/${name}? Non-favorited posts from this subreddit will be deleted.`)) return;
+const renderAllIdentifierLists = () => identifierEditors.forEach(renderIdentifierList);
+
+const handleRemoveIdentifier = async (editor, name) => {
+  if (!confirm(editor.confirmRemove(name))) return;
   try {
-    await api.removeSubreddit(name);
-    await loadAll();
+    await editor.remove(state.currentListId, name);
+    await loadListView();
     renderGrid();
-    renderSubredditList();
+    renderAllIdentifierLists();
   } catch (e) {
-    alert('Failed to remove subreddit: ' + e.message);
+    alert('Failed to remove: ' + e.message);
   }
-}
+};
 
-function renderStatusPanel() {
+const renderStatusPanel = () => {
   const panel = document.getElementById('status-panel');
   if (!state.status) { panel.innerHTML = '<span>Loading…</span>'; return; }
 
@@ -465,75 +640,182 @@ function renderStatusPanel() {
   row('Posts stored', s.posts_count);
   row('Favorites', s.favorites_count);
 
-  if (s.subreddits && s.subreddits.length > 0) {
+  identifierEditors.forEach((editor) => {
+    const names = state.currentList?.[editor.listKey] || [];
+    if (names.length === 0) return;
+
     const hdr = document.createElement('div');
     hdr.className = 'status-label';
     hdr.style.marginTop = '8px';
-    hdr.textContent = 'Last checked:';
+    hdr.textContent = editor.source[0].toUpperCase() + editor.source.slice(1) + ' last checked:';
     panel.appendChild(hdr);
 
     const subList = document.createElement('div');
     subList.className = 'status-sub-list';
-    s.subreddits.forEach(sub => {
-      const t = s.last_checked[sub];
+    names.forEach((name) => {
+      const t = s.last_checked?.[editor.source]?.[name];
       const row = document.createElement('div');
       row.className = 'status-sub-row';
-      row.innerHTML = `<span>r/${sub}</span><span style="color:var(--text-muted)">${t === 'never' ? 'never' : new Date(t).toLocaleString()}</span>`;
+      row.innerHTML = `<span>${editor.displayName(name)}</span><span style="color:var(--text-muted)">${!t || t === 'never' ? 'never' : new Date(t).toLocaleString()}</span>`;
       subList.appendChild(row);
     });
     panel.appendChild(subList);
-  }
-}
+  });
+};
 
-function populateSettingsForm() {
-  if (!state.config) return;
-  document.getElementById('cfg-interval').value = state.config.check_interval || '';
-  document.getElementById('cfg-download-dir').value = state.config.download_dir || '';
-  document.getElementById('cfg-max-age').value = state.config.max_post_age_days ?? '';
-  document.getElementById('cfg-imgur-client-id').value = state.config.imgur_client_id || '';
-}
+// ── Settings view (global) ────────────────────────────────────────────────
+const populateSettingsForm = () => {
+  if (!state.settings) return;
+  document.getElementById('cfg-interval').value = state.settings.check_interval || '';
+  document.getElementById('cfg-download-dir').value = state.settings.download_dir || '';
+  document.getElementById('cfg-max-age').value = state.settings.max_post_age_days ?? '';
+  document.getElementById('cfg-imgur-client-id').value = state.settings.imgur_client_id || '';
+  document.getElementById('cfg-flickr-api-key').value = state.settings.flickr_api_key || '';
+};
 
 // ── Data loading ──────────────────────────────────────────────────────────
-async function loadPosts() {
-  const data = await api.getPosts();
+const loadPosts = async () => {
+  const data = await api.getPosts(state.currentListId);
   state.posts = data || [];
   state.favorites = {};
-  state.posts.forEach(p => { if (p.favorited) state.favorites[p.id] = true; });
-}
+  state.posts.forEach((p) => { if (p.favorited) state.favorites[p.id] = true; });
+};
 
-async function loadAll() {
-  const [cfg, status] = await Promise.all([
-    api.getConfig().catch(() => null),
-    api.getStatus().catch(() => null),
+const loadListView = async () => {
+  const [list, status] = await Promise.all([
+    api.getList(state.currentListId),
+    api.getListStatus(state.currentListId).catch(() => null),
   ]);
-  state.config = cfg;
+  state.currentList = list;
   state.status = status;
   await loadPosts();
-}
+};
+
+const showHome = async () => {
+  state.view = 'home';
+  showView('home');
+  try {
+    state.lists = await api.getLists();
+  } catch (e) {
+    console.error('Failed to load lists:', e);
+    state.lists = [];
+  }
+  renderHome();
+};
+
+const showSettings = async () => {
+  state.view = 'settings';
+  showView('settings');
+  try {
+    state.settings = await api.getSettings();
+    populateSettingsForm();
+  } catch (e) {
+    console.error('Failed to load settings:', e);
+  }
+};
+
+const openList = async (listId) => {
+  state.view = 'list';
+  state.currentListId = listId;
+  state.filter = 'all';
+  document.querySelectorAll('.filter-btn').forEach((b) => b.classList.toggle('active', b.dataset.filter === 'all'));
+  showTab('media');
+  showView('list');
+
+  document.getElementById('media-loading').hidden = false;
+
+  try {
+    await loadListView();
+  } catch (e) {
+    console.error('Failed to load list:', e);
+  }
+
+  document.getElementById('current-list-name').textContent = state.currentList ? state.currentList.name : '';
+  renderGrid();
+  renderAllIdentifierLists();
+  renderStatusPanel();
+};
+
+// ── Hash router ───────────────────────────────────────────────────────────
+const route = () => {
+  const hash = location.hash.slice(1); // strip leading '#'
+  if (hash.startsWith('/list/')) {
+    openList(hash.slice('/list/'.length));
+    return;
+  }
+  if (hash === '/settings') {
+    showSettings();
+    return;
+  }
+  showHome();
+};
+
+const navigate = (hash) => {
+  if (location.hash === hash) {
+    route();
+    return;
+  }
+  location.hash = hash;
+};
+
+const setupIdentifierEditorEvents = () => {
+  identifierEditors.forEach((editor) => {
+    document.getElementById(editor.formId).addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById(editor.inputId);
+      const name = editor.normalize(input.value);
+      if (!name) return;
+      try {
+        await editor.add(state.currentListId, name);
+        input.value = '';
+        await loadListView();
+        renderGrid();
+        renderAllIdentifierLists();
+        renderStatusPanel();
+      } catch (err) {
+        alert('Failed to add: ' + err.message);
+      }
+    });
+  });
+};
 
 // ── Event wiring ──────────────────────────────────────────────────────────
-function setupEvents() {
-  // Tab switching
-  document.querySelectorAll('.tab-btn').forEach(btn => {
+const setupEvents = () => {
+  document.getElementById('settings-btn').addEventListener('click', () => navigate('#/settings'));
+  document.getElementById('back-from-settings-btn').addEventListener('click', () => navigate('#/'));
+  document.getElementById('back-to-home-btn').addEventListener('click', () => navigate('#/'));
+
+  document.getElementById('new-list-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const nameInput = document.getElementById('new-list-name');
+    const subsInput = document.getElementById('new-list-subreddits');
+    const name = nameInput.value.trim();
+    if (!name) return;
+    try {
+      await handleCreateList(name, subsInput.value);
+      nameInput.value = '';
+      subsInput.value = '';
+    } catch (err) {
+      alert('Failed to create list: ' + err.message);
+    }
+  });
+
+  // Tab switching (within a list)
+  document.querySelectorAll('.tab-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const tab = btn.dataset.tab;
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById('tab-' + tab).classList.add('active');
-      if (tab === 'config') {
-        renderSubredditList();
+      showTab(btn.dataset.tab);
+      if (btn.dataset.tab === 'config') {
+        renderAllIdentifierLists();
         renderStatusPanel();
-        populateSettingsForm();
       }
     });
   });
 
   // Filter buttons
-  document.querySelectorAll('.filter-btn').forEach(btn => {
+  document.querySelectorAll('.filter-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.filter = btn.dataset.filter;
-      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
       renderGrid();
     });
@@ -544,10 +826,10 @@ function setupEvents() {
   refreshBtn.addEventListener('click', async () => {
     refreshBtn.classList.add('spinning');
     try {
-      await api.refresh();
+      await api.refreshList(state.currentListId);
       // Give the scheduler a moment to fetch then reload.
-      await new Promise(r => setTimeout(r, 3000));
-      await loadAll();
+      await new Promise((r) => setTimeout(r, 3000));
+      await loadListView();
       renderGrid();
     } catch (e) {
       console.error('Refresh failed:', e);
@@ -574,34 +856,22 @@ function setupEvents() {
   // Swipe in viewer
   setupSwipe(document.getElementById('viewer-media-wrap'));
 
-  // ── Config events ──
-  document.getElementById('add-subreddit-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const input = document.getElementById('subreddit-input');
-    const name = input.value.trim().toLowerCase().replace(/^r\//, '');
-    if (!name) return;
-    try {
-      await api.addSubreddit(name);
-      input.value = '';
-      await loadAll();
-      renderSubredditList();
-      renderStatusPanel();
-    } catch (err) {
-      alert('Failed to add subreddit: ' + err.message);
-    }
-  });
+  // ── Config events (per list) ──
+  setupIdentifierEditorEvents();
 
+  // ── Settings events (global) ──
   document.getElementById('settings-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const saved = document.getElementById('settings-saved');
     try {
-      await api.updateConfig({
+      await api.updateSettings({
         check_interval:    document.getElementById('cfg-interval').value.trim(),
         download_dir:      document.getElementById('cfg-download-dir').value.trim(),
         max_post_age_days: parseInt(document.getElementById('cfg-max-age').value, 10) || 30,
         imgur_client_id:   document.getElementById('cfg-imgur-client-id').value.trim(),
+        flickr_api_key:    document.getElementById('cfg-flickr-api-key').value.trim(),
       });
-      state.config = await api.getConfig();
+      state.settings = await api.getSettings();
       saved.hidden = false;
       setTimeout(() => { saved.hidden = true; }, 2000);
     } catch (err) {
@@ -614,11 +884,11 @@ function setupEvents() {
     btn.textContent = 'Refreshing…';
     btn.disabled = true;
     try {
-      await api.refresh();
-      await new Promise(r => setTimeout(r, 4000));
-      await loadAll();
+      await api.refreshList(state.currentListId);
+      await new Promise((r) => setTimeout(r, 4000));
+      await loadListView();
       renderGrid();
-      renderSubredditList();
+      renderAllIdentifierLists();
       renderStatusPanel();
     } catch (e) {
       console.error('Refresh failed:', e);
@@ -627,22 +897,14 @@ function setupEvents() {
       btn.disabled = false;
     }
   });
-}
+
+  window.addEventListener('hashchange', route);
+};
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────
-async function init() {
-  const loading = document.getElementById('media-loading');
-  loading.hidden = false;
-
+const init = () => {
   setupEvents();
-
-  try {
-    await loadAll();
-  } catch (e) {
-    console.error('Init failed:', e);
-  }
-
-  renderGrid();
-}
+  route();
+};
 
 init();

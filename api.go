@@ -18,10 +18,10 @@ var staticFiles embed.FS
 
 // APIServer holds dependencies for all HTTP handlers.
 type APIServer struct {
-	config    *Config
-	storage   *Storage
+	config     *Config
+	storage    *Storage
 	configPath string
-	refreshCh chan<- struct{}
+	refreshCh  chan<- struct{}
 }
 
 // PostWithFavorite is the API representation of a Post, including the caller's
@@ -42,14 +42,25 @@ func StartAPIServer(ctx context.Context, config *Config, storage *Storage, confi
 
 	mux := http.NewServeMux()
 
-	// API routes
-	mux.HandleFunc("/api/posts", api.handlePosts)
-	mux.HandleFunc("/api/posts/", api.handlePostByID)
+	// Lists
+	mux.HandleFunc("GET /api/lists", api.handleListsIndex)
+	mux.HandleFunc("POST /api/lists", api.handleListsIndex)
+	mux.HandleFunc("GET /api/lists/{id}", api.handleListByID)
+	mux.HandleFunc("PUT /api/lists/{id}", api.handleListByID)
+	mux.HandleFunc("DELETE /api/lists/{id}", api.handleListByID)
+	mux.HandleFunc("GET /api/lists/{id}/posts", api.handleListPosts)
+	mux.HandleFunc("POST /api/lists/{id}/posts/{postId}/favorite", api.handleListPostFavorite)
+	mux.HandleFunc("POST /api/lists/{id}/subreddits", api.handleListSubreddits)
+	mux.HandleFunc("DELETE /api/lists/{id}/subreddits/{name}", api.handleListSubredditByName)
+	mux.HandleFunc("POST /api/lists/{id}/flickr-groups", api.handleListFlickrGroups)
+	mux.HandleFunc("DELETE /api/lists/{id}/flickr-groups/{name}", api.handleListFlickrGroupByName)
+	mux.HandleFunc("POST /api/lists/{id}/lemmy-communities", api.handleListLemmyCommunities)
+	mux.HandleFunc("DELETE /api/lists/{id}/lemmy-communities/{name}", api.handleListLemmyCommunityByName)
+	mux.HandleFunc("POST /api/lists/{id}/refresh", api.handleListRefresh)
+	mux.HandleFunc("GET /api/lists/{id}/status", api.handleListStatus)
+
+	// Global config
 	mux.HandleFunc("/api/config", api.handleConfig)
-	mux.HandleFunc("/api/subreddits", api.handleSubreddits)
-	mux.HandleFunc("/api/subreddits/", api.handleSubredditByName)
-	mux.HandleFunc("/api/refresh", api.handleRefresh)
-	mux.HandleFunc("/api/status", api.handleStatus)
 
 	// Static file server (embedded)
 	staticFS, err := fs.Sub(staticFiles, "static")
@@ -80,16 +91,133 @@ func StartAPIServer(ctx context.Context, config *Config, storage *Storage, confi
 	log.Println("API server stopped")
 }
 
+// ---- Lists ----
+
+func (api *APIServer) handleListsIndex(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		lists := api.config.GetLists()
+		result := make([]map[string]interface{}, 0, len(lists))
+		for _, l := range lists {
+			result = append(result, map[string]interface{}{
+				"id":                l.ID,
+				"name":              l.Name,
+				"subreddits":        l.Subreddits,
+				"flickr_groups":     l.FlickrGroups,
+				"lemmy_communities": l.LemmyCommunities,
+				"post_count":        len(api.storage.GetPosts(l.ID)),
+				"favorite_count":    len(api.storage.GetFavorites(l.ID)),
+			})
+		}
+		apiSuccess(w, result)
+
+	case http.MethodPost:
+		var req struct {
+			Name             string   `json:"name"`
+			Subreddits       []string `json:"subreddits"`
+			FlickrGroups     []string `json:"flickr_groups"`
+			LemmyCommunities []string `json:"lemmy_communities"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+
+		list, err := api.config.AddList(NewListInput{
+			Name:             req.Name,
+			Subreddits:       req.Subreddits,
+			FlickrGroups:     req.FlickrGroups,
+			LemmyCommunities: req.LemmyCommunities,
+		})
+		if err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		if err := api.config.Save(api.configPath); err != nil {
+			apiError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
+			return
+		}
+
+		if len(list.Subreddits) > 0 || len(list.FlickrGroups) > 0 || len(list.LemmyCommunities) > 0 {
+			select {
+			case api.refreshCh <- struct{}{}:
+			default:
+			}
+		}
+
+		log.Printf("List created: %q (%s)", list.Name, list.ID)
+		apiSuccess(w, list)
+
+	default:
+		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (api *APIServer) handleListByID(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	list, ok := api.config.GetList(id)
+	if !ok {
+		apiError(w, http.StatusNotFound, "list not found")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		apiSuccess(w, list)
+
+	case http.MethodPut:
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			apiError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if !api.config.RenameList(id, req.Name) {
+			apiError(w, http.StatusBadRequest, "name is required")
+			return
+		}
+		if err := api.config.Save(api.configPath); err != nil {
+			apiError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
+			return
+		}
+		updated, _ := api.config.GetList(id)
+		apiSuccess(w, updated)
+
+	case http.MethodDelete:
+		api.config.RemoveList(id)
+		if err := api.config.Save(api.configPath); err != nil {
+			apiError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
+			return
+		}
+		if err := api.storage.RemoveList(id); err != nil {
+			log.Printf("Warning: failed to remove data for list %s: %v", id, err)
+		}
+		log.Printf("List deleted: %q (%s)", list.Name, id)
+		apiSuccess(w, map[string]string{"id": id})
+
+	default:
+		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
 // ---- Posts ----
 
-func (api *APIServer) handlePosts(w http.ResponseWriter, r *http.Request) {
+func (api *APIServer) handleListPosts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	posts := api.storage.GetPosts()
-	favs := api.storage.GetFavorites()
+	id := r.PathValue("id")
+	if _, ok := api.config.GetList(id); !ok {
+		apiError(w, http.StatusNotFound, "list not found")
+		return
+	}
+
+	posts := api.storage.GetPosts(id)
+	favs := api.storage.GetFavorites(id)
 
 	filter := r.URL.Query().Get("filter") // "all" | "favorites" | "non-favorites"
 	subredditFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("subreddit")))
@@ -120,21 +248,20 @@ func (api *APIServer) handlePosts(w http.ResponseWriter, r *http.Request) {
 	apiSuccess(w, result)
 }
 
-func (api *APIServer) handlePostByID(w http.ResponseWriter, r *http.Request) {
-	// Expect /api/posts/{id}/favorite
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(parts) < 4 || parts[3] != "favorite" {
-		apiError(w, http.StatusNotFound, "not found")
-		return
-	}
-	postID := parts[2]
-
+func (api *APIServer) handleListPostFavorite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	nowFav, err := api.storage.ToggleFavorite(postID)
+	id := r.PathValue("id")
+	if _, ok := api.config.GetList(id); !ok {
+		apiError(w, http.StatusNotFound, "list not found")
+		return
+	}
+	postID := r.PathValue("postId")
+
+	nowFav, err := api.storage.ToggleFavorite(id, postID)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, fmt.Sprintf("failed to toggle favorite: %v", err))
 		return
@@ -142,7 +269,7 @@ func (api *APIServer) handlePostByID(w http.ResponseWriter, r *http.Request) {
 
 	// When newly favorited, download media asynchronously.
 	if nowFav {
-		posts := api.storage.GetPosts()
+		posts := api.storage.GetPosts(id)
 		for _, p := range posts {
 			if p.ID == postID {
 				api.config.RLock()
@@ -157,7 +284,7 @@ func (api *APIServer) handlePostByID(w http.ResponseWriter, r *http.Request) {
 	apiSuccess(w, map[string]bool{"favorited": nowFav})
 }
 
-// ---- Config ----
+// ---- Config (global settings) ----
 
 func (api *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -169,8 +296,8 @@ func (api *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 			"download_dir":      api.config.DownloadDir,
 			"api_port":          api.config.APIPort,
 			"max_post_age_days": api.config.MaxPostAgeDays,
-			"subreddits":        api.config.Subreddits,
 			"imgur_client_id":   api.config.ImgurClientID,
+			"flickr_api_key":    api.config.FlickrAPIKey,
 		})
 
 	case http.MethodPut:
@@ -193,6 +320,9 @@ func (api *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if v, ok := updates["imgur_client_id"].(string); ok {
 			api.config.ImgurClientID = v
 		}
+		if v, ok := updates["flickr_api_key"].(string); ok {
+			api.config.FlickrAPIKey = v
+		}
 		api.config.Unlock()
 
 		if err := api.config.Save(api.configPath); err != nil {
@@ -208,82 +338,232 @@ func (api *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ---- Subreddits ----
+// ---- Subreddits (per list) ----
 
-func (api *APIServer) handleSubreddits(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		apiSuccess(w, api.config.GetSubreddits())
-
-	case http.MethodPost:
-		var req struct {
-			Name string `json:"name"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			apiError(w, http.StatusBadRequest, "invalid request body")
-			return
-		}
-		name := strings.ToLower(strings.TrimSpace(req.Name))
-		if name == "" {
-			apiError(w, http.StatusBadRequest, "name is required")
-			return
-		}
-
-		added := api.config.AddSubreddit(name)
-		if err := api.config.Save(api.configPath); err != nil {
-			apiError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
-			return
-		}
-
-		// Trigger an immediate check for the new subreddit.
-		if added {
-			select {
-			case api.refreshCh <- struct{}{}:
-			default:
-			}
-		}
-
-		log.Printf("Subreddit added: r/%s", name)
-		apiSuccess(w, map[string]interface{}{"name": name, "added": added})
-
-	default:
+func (api *APIServer) handleListSubreddits(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
 		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
 	}
+
+	id := r.PathValue("id")
+	if _, ok := api.config.GetList(id); !ok {
+		apiError(w, http.StatusNotFound, "list not found")
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	name := strings.ToLower(strings.TrimSpace(req.Name))
+	if name == "" {
+		apiError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	added, _ := api.config.AddSubredditToList(id, name)
+	if err := api.config.Save(api.configPath); err != nil {
+		apiError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
+		return
+	}
+
+	// Trigger an immediate check for the new subreddit.
+	if added {
+		select {
+		case api.refreshCh <- struct{}{}:
+		default:
+		}
+	}
+
+	log.Printf("Subreddit added to list %s: r/%s", id, name)
+	apiSuccess(w, map[string]interface{}{"name": name, "added": added})
 }
 
-func (api *APIServer) handleSubredditByName(w http.ResponseWriter, r *http.Request) {
+func (api *APIServer) handleListSubredditByName(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(parts) < 3 {
-		apiError(w, http.StatusBadRequest, "subreddit name required")
+	id := r.PathValue("id")
+	if _, ok := api.config.GetList(id); !ok {
+		apiError(w, http.StatusNotFound, "list not found")
 		return
 	}
-	name := strings.ToLower(parts[2])
+	name := strings.ToLower(r.PathValue("name"))
 
-	api.config.RemoveSubreddit(name)
+	api.config.RemoveSubredditFromList(id, name)
 	if err := api.config.Save(api.configPath); err != nil {
 		apiError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
 		return
 	}
 
 	// Remove non-favorited posts for this subreddit.
-	if err := api.storage.RemoveSubredditData(name); err != nil {
-		log.Printf("Warning: failed to remove data for r/%s: %v", name, err)
+	if err := api.storage.RemoveSourceData(id, SourceReddit, name); err != nil {
+		log.Printf("Warning: failed to remove data for r/%s in list %s: %v", name, id, err)
 	}
 
-	log.Printf("Subreddit removed: r/%s", name)
+	log.Printf("Subreddit removed from list %s: r/%s", id, name)
+	apiSuccess(w, map[string]string{"name": name})
+}
+
+// ---- Flickr groups (per list) ----
+
+func (api *APIServer) handleListFlickrGroups(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	id := r.PathValue("id")
+	if _, ok := api.config.GetList(id); !ok {
+		apiError(w, http.StatusNotFound, "list not found")
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	name := normalizeFlickrGroupSlug(req.Name)
+	if name == "" {
+		apiError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	added, _ := api.config.AddFlickrGroupToList(id, name)
+	if err := api.config.Save(api.configPath); err != nil {
+		apiError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
+		return
+	}
+
+	if added {
+		select {
+		case api.refreshCh <- struct{}{}:
+		default:
+		}
+	}
+
+	log.Printf("Flickr group added to list %s: %s", id, name)
+	apiSuccess(w, map[string]interface{}{"name": name, "added": added})
+}
+
+func (api *APIServer) handleListFlickrGroupByName(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	id := r.PathValue("id")
+	if _, ok := api.config.GetList(id); !ok {
+		apiError(w, http.StatusNotFound, "list not found")
+		return
+	}
+	name := r.PathValue("name")
+
+	api.config.RemoveFlickrGroupFromList(id, name)
+	if err := api.config.Save(api.configPath); err != nil {
+		apiError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
+		return
+	}
+
+	if err := api.storage.RemoveSourceData(id, SourceFlickr, name); err != nil {
+		log.Printf("Warning: failed to remove data for flickr group %s in list %s: %v", name, id, err)
+	}
+
+	log.Printf("Flickr group removed from list %s: %s", id, name)
+	apiSuccess(w, map[string]string{"name": name})
+}
+
+// ---- Lemmy communities (per list) ----
+
+func (api *APIServer) handleListLemmyCommunities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	id := r.PathValue("id")
+	if _, ok := api.config.GetList(id); !ok {
+		apiError(w, http.StatusNotFound, "list not found")
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apiError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	name := normalizeLemmyIdentifier(req.Name)
+	if name == "" {
+		apiError(w, http.StatusBadRequest, `name must look like "community@instance"`)
+		return
+	}
+
+	added, _ := api.config.AddLemmyCommunityToList(id, name)
+	if err := api.config.Save(api.configPath); err != nil {
+		apiError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
+		return
+	}
+
+	if added {
+		select {
+		case api.refreshCh <- struct{}{}:
+		default:
+		}
+	}
+
+	log.Printf("Lemmy community added to list %s: %s", id, name)
+	apiSuccess(w, map[string]interface{}{"name": name, "added": added})
+}
+
+func (api *APIServer) handleListLemmyCommunityByName(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	id := r.PathValue("id")
+	if _, ok := api.config.GetList(id); !ok {
+		apiError(w, http.StatusNotFound, "list not found")
+		return
+	}
+	name := strings.ToLower(r.PathValue("name"))
+
+	api.config.RemoveLemmyCommunityFromList(id, name)
+	if err := api.config.Save(api.configPath); err != nil {
+		apiError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
+		return
+	}
+
+	if err := api.storage.RemoveSourceData(id, SourceLemmy, name); err != nil {
+		log.Printf("Warning: failed to remove data for lemmy community %s in list %s: %v", name, id, err)
+	}
+
+	log.Printf("Lemmy community removed from list %s: %s", id, name)
 	apiSuccess(w, map[string]string{"name": name})
 }
 
 // ---- Refresh ----
 
-func (api *APIServer) handleRefresh(w http.ResponseWriter, r *http.Request) {
+func (api *APIServer) handleListRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	id := r.PathValue("id")
+	if _, ok := api.config.GetList(id); !ok {
+		apiError(w, http.StatusNotFound, "list not found")
 		return
 	}
 
@@ -299,32 +579,48 @@ func (api *APIServer) handleRefresh(w http.ResponseWriter, r *http.Request) {
 
 // ---- Status ----
 
-func (api *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (api *APIServer) handleListStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	posts := api.storage.GetPosts()
-	favs := api.storage.GetFavorites()
-	subs := api.config.GetSubreddits()
-
-	lastChecked := make(map[string]string, len(subs))
-	for _, s := range subs {
-		t := api.storage.GetLastChecked(s)
-		if t.IsZero() {
-			lastChecked[s] = "never"
-		} else {
-			lastChecked[s] = t.Format(time.RFC3339)
-		}
+	id := r.PathValue("id")
+	list, ok := api.config.GetList(id)
+	if !ok {
+		apiError(w, http.StatusNotFound, "list not found")
+		return
 	}
 
+	posts := api.storage.GetPosts(id)
+	favs := api.storage.GetFavorites(id)
+
 	apiSuccess(w, map[string]interface{}{
-		"posts_count":     len(posts),
-		"favorites_count": len(favs),
-		"subreddits":      subs,
-		"last_checked":    lastChecked,
+		"posts_count":       len(posts),
+		"favorites_count":   len(favs),
+		"subreddits":        list.Subreddits,
+		"flickr_groups":     list.FlickrGroups,
+		"lemmy_communities": list.LemmyCommunities,
+		"last_checked": map[string]interface{}{
+			"reddit": lastCheckedMap(api.storage, id, SourceReddit, list.Subreddits),
+			"flickr": lastCheckedMap(api.storage, id, SourceFlickr, list.FlickrGroups),
+			"lemmy":  lastCheckedMap(api.storage, id, SourceLemmy, list.LemmyCommunities),
+		},
 	})
+}
+
+// lastCheckedMap builds a name -> "never"|RFC3339 map for one source's identifiers.
+func lastCheckedMap(storage *Storage, listID string, source PostSource, names []string) map[string]string {
+	out := make(map[string]string, len(names))
+	for _, name := range names {
+		t := storage.GetLastChecked(listID, source, name)
+		if t.IsZero() {
+			out[name] = "never"
+		} else {
+			out[name] = t.Format(time.RFC3339)
+		}
+	}
+	return out
 }
 
 // ---- Helpers ----

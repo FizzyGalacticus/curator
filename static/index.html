@@ -3,57 +3,39 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Reddit Media Curator</title>
+  <title>Curator</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <div id="app">
-    <!-- Tab bar -->
-    <nav class="tab-bar">
-      <button class="tab-btn active" data-tab="media">
-        <span class="tab-icon">⊞</span> Media
-      </button>
-      <button class="tab-btn" data-tab="config">
-        <span class="tab-icon">⚙</span> Config
-      </button>
-    </nav>
 
-    <!-- ── Media Tab ── -->
-    <div id="tab-media" class="tab-content active">
-      <div class="toolbar">
-        <div class="filter-group">
-          <button class="filter-btn active" data-filter="all">All</button>
-          <button class="filter-btn" data-filter="favorites">★ Favorites</button>
-          <button class="filter-btn" data-filter="non-favorites">Hide Favorites</button>
-        </div>
-        <div class="toolbar-right">
-          <span id="post-count" class="post-count"></span>
-          <button id="refresh-btn" class="icon-btn" title="Refresh now">↻</button>
-        </div>
+    <!-- ── Home view ── -->
+    <div id="view-home" class="view">
+      <header class="home-header">
+        <h1>Curator</h1>
+        <button id="settings-btn" class="icon-btn" title="Settings">⚙</button>
+      </header>
+
+      <div id="list-cards" class="list-card-grid"></div>
+      <div id="lists-empty" class="empty-state" hidden>
+        <div class="empty-icon">📂</div>
+        <p>No curation lists yet. Create one below to start curating.</p>
       </div>
 
-      <div id="masonry-grid" class="masonry-grid"></div>
-      <div id="media-empty" class="empty-state" hidden>
-        <div class="empty-icon">🖼</div>
-        <p>No media yet. Add subreddits in the <strong>Config</strong> tab.</p>
-      </div>
-      <div id="media-loading" class="loading-state" hidden>
-        <div class="spinner"></div>
-        <p>Loading…</p>
-      </div>
+      <form id="new-list-form" class="new-list-form">
+        <h2>New list</h2>
+        <input id="new-list-name" type="text" placeholder="List name, e.g. SFW" autocomplete="off" spellcheck="false">
+        <textarea id="new-list-subreddits" placeholder="Subreddits, comma or newline separated (optional), e.g. pics, wallpapers" rows="2"></textarea>
+        <button type="submit" class="btn-primary">Create list</button>
+      </form>
     </div>
 
-    <!-- ── Config Tab ── -->
-    <div id="tab-config" class="tab-content">
-      <div class="config-section">
-        <h2>Subreddits</h2>
-        <ul id="subreddit-list" class="subreddit-list"></ul>
-        <form id="add-subreddit-form" class="add-form">
-          <input id="subreddit-input" type="text" placeholder="e.g. pics" autocomplete="off" spellcheck="false">
-          <button type="submit" class="btn-primary">Add</button>
-        </form>
-      </div>
-
+    <!-- ── Settings view (global) ── -->
+    <div id="view-settings" class="view" hidden>
+      <header class="home-header">
+        <button id="back-from-settings-btn" class="icon-btn" title="Back to lists">←</button>
+        <h1>Settings</h1>
+      </header>
       <div class="config-section">
         <h2>Settings</h2>
         <form id="settings-form" class="settings-form">
@@ -77,15 +59,89 @@
             <input id="cfg-imgur-client-id" type="text" placeholder="e.g. abc123def456">
             <small>Enables full Imgur album support. Free — register at <strong>api.imgur.com/oauth2/addclient</strong> (select "Anonymous usage")</small>
           </label>
+          <label>
+            <span>Flickr API Key <em style="font-weight:400;color:var(--text-muted)">(optional)</em></span>
+            <input id="cfg-flickr-api-key" type="text" placeholder="e.g. abc123def456">
+            <small>Required for the Flickr group source. Free — register at <strong>flickr.com/services/apps/create</strong></small>
+          </label>
           <button type="submit" class="btn-primary">Save Settings</button>
           <span id="settings-saved" class="save-indicator" hidden>✓ Saved</span>
         </form>
       </div>
+    </div>
 
-      <div class="config-section">
-        <h2>Status</h2>
-        <div id="status-panel" class="status-panel"></div>
-        <button id="refresh-now-btn" class="btn-secondary">Check subreddits now</button>
+    <!-- ── List view ── -->
+    <div id="view-list" class="view" hidden>
+      <nav class="tab-bar">
+        <button id="back-to-home-btn" class="icon-btn" title="Back to lists">←</button>
+        <span id="current-list-name" class="current-list-name"></span>
+        <button class="tab-btn active" data-tab="media">
+          <span class="tab-icon">⊞</span> Media
+        </button>
+        <button class="tab-btn" data-tab="config">
+          <span class="tab-icon">⚙</span> Config
+        </button>
+      </nav>
+
+      <!-- Media tab -->
+      <div id="tab-media" class="tab-content active">
+        <div class="toolbar">
+          <div class="filter-group">
+            <button class="filter-btn active" data-filter="all">All</button>
+            <button class="filter-btn" data-filter="favorites">★ Favorites</button>
+            <button class="filter-btn" data-filter="non-favorites">Hide Favorites</button>
+          </div>
+          <div class="toolbar-right">
+            <span id="post-count" class="post-count"></span>
+            <button id="refresh-btn" class="icon-btn" title="Refresh now">↻</button>
+          </div>
+        </div>
+
+        <div id="masonry-grid" class="masonry-grid"></div>
+        <div id="media-empty" class="empty-state" hidden>
+          <div class="empty-icon">🖼</div>
+          <p>No media yet. Add subreddits in the <strong>Config</strong> tab.</p>
+        </div>
+        <div id="media-loading" class="loading-state" hidden>
+          <div class="spinner"></div>
+          <p>Loading…</p>
+        </div>
+      </div>
+
+      <!-- Config tab -->
+      <div id="tab-config" class="tab-content">
+        <div class="config-section">
+          <h2>Subreddits</h2>
+          <ul id="subreddit-list" class="subreddit-list"></ul>
+          <form id="add-subreddit-form" class="add-form">
+            <input id="subreddit-input" type="text" placeholder="e.g. pics" autocomplete="off" spellcheck="false">
+            <button type="submit" class="btn-primary">Add</button>
+          </form>
+        </div>
+
+        <div class="config-section">
+          <h2>Flickr Groups</h2>
+          <ul id="flickr-group-list" class="subreddit-list"></ul>
+          <form id="add-flickr-group-form" class="add-form">
+            <input id="flickr-group-input" type="text" placeholder="e.g. blackandwhite, or a full group URL" autocomplete="off" spellcheck="false">
+            <button type="submit" class="btn-primary">Add</button>
+          </form>
+        </div>
+
+        <div class="config-section">
+          <h2>Lemmy Communities</h2>
+          <ul id="lemmy-community-list" class="subreddit-list"></ul>
+          <form id="add-lemmy-community-form" class="add-form">
+            <input id="lemmy-community-input" type="text" placeholder="e.g. pics@lemmy.world" autocomplete="off" spellcheck="false">
+            <button type="submit" class="btn-primary">Add</button>
+          </form>
+        </div>
+
+        <div class="config-section">
+          <h2>Status</h2>
+          <div id="status-panel" class="status-panel"></div>
+          <button id="refresh-now-btn" class="btn-secondary">Check subreddits now</button>
+        </div>
       </div>
     </div>
   </div>

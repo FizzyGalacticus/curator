@@ -10,11 +10,11 @@ import (
 )
 
 type mockFetcher struct {
-	fn func(subreddit string, since time.Time, imgurClientID string) ([]Post, error)
+	fn func(subreddit string, since time.Time, creds FetchCredentials) ([]Post, error)
 }
 
-func (m *mockFetcher) FetchNewPosts(subreddit string, since time.Time, imgurClientID string) ([]Post, error) {
-	return m.fn(subreddit, since, imgurClientID)
+func (m *mockFetcher) FetchNewPosts(subreddit string, since time.Time, creds FetchCredentials) ([]Post, error) {
+	return m.fn(subreddit, since, creds)
 }
 
 func mockScrolllerResponse(items []scrolllerPost) map[string]any {
@@ -62,7 +62,7 @@ func TestScrolllerFetchNewPosts_Image(t *testing.T) {
 	defer srv.Close()
 
 	client := newScrolllerTestClient(srv)
-	result, err := client.FetchNewPosts("testsubreddit", time.Time{}, "")
+	result, err := client.FetchNewPosts("testsubreddit", time.Time{}, FetchCredentials{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,6 +76,9 @@ func TestScrolllerFetchNewPosts_Image(t *testing.T) {
 	}
 	if p.Subreddit != "testsubreddit" {
 		t.Errorf("Subreddit = %q, want testsubreddit", p.Subreddit)
+	}
+	if p.Source != SourceReddit {
+		t.Errorf("Source = %q, want %q", p.Source, SourceReddit)
 	}
 	if len(p.MediaItems) != 1 {
 		t.Fatalf("expected 1 media item, got %d", len(p.MediaItems))
@@ -121,7 +124,7 @@ func TestScrolllerFetchNewPosts_Video(t *testing.T) {
 	defer srv.Close()
 
 	client := newScrolllerTestClient(srv)
-	result, err := client.FetchNewPosts("testsubreddit", time.Time{}, "")
+	result, err := client.FetchNewPosts("testsubreddit", time.Time{}, FetchCredentials{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,7 +162,7 @@ func TestScrolllerFetchNewPosts_NoMedia(t *testing.T) {
 	defer srv.Close()
 
 	client := newScrolllerTestClient(srv)
-	result, err := client.FetchNewPosts("testsubreddit", time.Time{}, "")
+	result, err := client.FetchNewPosts("testsubreddit", time.Time{}, FetchCredentials{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -180,7 +183,7 @@ func TestScrolllerFetchNewPosts_GraphQLError(t *testing.T) {
 	defer srv.Close()
 
 	client := newScrolllerTestClient(srv)
-	_, err := client.FetchNewPosts("doesnotexist", time.Time{}, "")
+	_, err := client.FetchNewPosts("doesnotexist", time.Time{}, FetchCredentials{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -193,7 +196,7 @@ func TestScrolllerFetchNewPosts_HTTPError(t *testing.T) {
 	defer srv.Close()
 
 	client := newScrolllerTestClient(srv)
-	_, err := client.FetchNewPosts("testsubreddit", time.Time{}, "")
+	_, err := client.FetchNewPosts("testsubreddit", time.Time{}, FetchCredentials{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -216,22 +219,98 @@ func TestScrolllerMediaItem_WebmOnly(t *testing.T) {
 	}
 }
 
+func TestSyntheticScrolllerTimestamp(t *testing.T) {
+	now := time.Now().UTC()
+
+	// Single item: always "now", no spread needed.
+	if got := syntheticScrolllerTimestamp(0, 1, time.Time{}, now); !got.Equal(now) {
+		t.Errorf("single item: want now, got %v", got)
+	}
+
+	// First-ever check (zero since): falls back to a 30-minute window.
+	first := syntheticScrolllerTimestamp(0, 3, time.Time{}, now)
+	last := syntheticScrolllerTimestamp(2, 3, time.Time{}, now)
+	if !first.Equal(now) {
+		t.Errorf("index 0: want now, got %v", first)
+	}
+	if !last.Equal(now.Add(-30 * time.Minute)) {
+		t.Errorf("last index with zero since: want now-30m, got %v", last)
+	}
+
+	// Normal case: spreads linearly across [since, now].
+	since := now.Add(-20 * time.Minute)
+	mid := syntheticScrolllerTimestamp(2, 5, since, now)
+	wantMid := now.Add(-10 * time.Minute) // index 2 of 5 -> halfway through the 20m window
+	if !mid.Equal(wantMid) {
+		t.Errorf("midpoint: want %v, got %v", wantMid, mid)
+	}
+	oldest := syntheticScrolllerTimestamp(4, 5, since, now)
+	if !oldest.Equal(since) {
+		t.Errorf("last index: want since (%v), got %v", since, oldest)
+	}
+}
+
+func TestScrolllerFetchNewPosts_SpreadsTimestampsAcrossBatch(t *testing.T) {
+	posts := make([]scrolllerPost, 5)
+	for i := range posts {
+		posts[i] = scrolllerPost{
+			Typename: "SubredditPost",
+			ID:       i + 1,
+			URL:      fmt.Sprintf("/post-%d", i),
+			Title:    fmt.Sprintf("Post %d", i),
+			MediaSources: []scrolllerMediaSource{
+				{URL: fmt.Sprintf("https://images.scrolller.com/%d.jpg", i), Width: 800, Height: 600},
+			},
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(mockScrolllerResponse(posts))
+	}))
+	defer srv.Close()
+
+	client := newScrolllerTestClient(srv)
+	since := time.Now().UTC().Add(-10 * time.Minute)
+	result, err := client.FetchNewPosts("testsubreddit", since, FetchCredentials{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 5 {
+		t.Fatalf("want 5 posts, got %d", len(result))
+	}
+
+	// Timestamps must be strictly decreasing in fetch order (item 0 newest),
+	// not all bunched at the same instant — this is what lets the UI
+	// interleave posts from different subreddits/sources by real recency
+	// instead of showing one solid block per subreddit.
+	for i := 1; i < len(result); i++ {
+		if !result[i-1].CreatedAt.After(result[i].CreatedAt) {
+			t.Errorf("expected strictly decreasing CreatedAt, item %d (%v) not after item %d (%v)",
+				i-1, result[i-1].CreatedAt, i, result[i].CreatedAt)
+		}
+	}
+	if result[len(result)-1].CreatedAt.Before(since) {
+		t.Errorf("oldest item's CreatedAt (%v) should not predate since (%v)", result[len(result)-1].CreatedAt, since)
+	}
+}
+
 func TestFallbackFetcher_UsesSecondaryOnError(t *testing.T) {
 	called := false
 	secondary := &mockFetcher{
-		fn: func(sub string, since time.Time, imgurID string) ([]Post, error) {
+		fn: func(sub string, since time.Time, creds FetchCredentials) ([]Post, error) {
 			called = true
 			return []Post{{ID: "fallback_post"}}, nil
 		},
 	}
 	primary := &mockFetcher{
-		fn: func(sub string, since time.Time, imgurID string) ([]Post, error) {
+		fn: func(sub string, since time.Time, creds FetchCredentials) ([]Post, error) {
 			return nil, fmt.Errorf("primary failed")
 		},
 	}
 
 	fb := &FallbackFetcher{Primary: primary, Secondary: secondary}
-	posts, err := fb.FetchNewPosts("pics", time.Now(), "")
+	posts, err := fb.FetchNewPosts("pics", time.Now(), FetchCredentials{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -246,19 +325,19 @@ func TestFallbackFetcher_UsesSecondaryOnError(t *testing.T) {
 func TestFallbackFetcher_UsesPrimaryWhenSucceeds(t *testing.T) {
 	secondaryCalled := false
 	secondary := &mockFetcher{
-		fn: func(sub string, since time.Time, imgurID string) ([]Post, error) {
+		fn: func(sub string, since time.Time, creds FetchCredentials) ([]Post, error) {
 			secondaryCalled = true
 			return nil, nil
 		},
 	}
 	primary := &mockFetcher{
-		fn: func(sub string, since time.Time, imgurID string) ([]Post, error) {
+		fn: func(sub string, since time.Time, creds FetchCredentials) ([]Post, error) {
 			return []Post{{ID: "primary_post"}}, nil
 		},
 	}
 
 	fb := &FallbackFetcher{Primary: primary, Secondary: secondary}
-	posts, err := fb.FetchNewPosts("pics", time.Now(), "")
+	posts, err := fb.FetchNewPosts("pics", time.Now(), FetchCredentials{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

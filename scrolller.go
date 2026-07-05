@@ -103,8 +103,8 @@ type scrolllerResponse struct {
 }
 
 // FetchNewPosts implements PostFetcher for Scrolller.
-// The imgurClientID parameter is unused but required by the interface.
-func (c *ScrolllerClient) FetchNewPosts(subreddit string, since time.Time, _ string) ([]Post, error) {
+// The creds parameter is unused but required by the interface.
+func (c *ScrolllerClient) FetchNewPosts(subreddit string, since time.Time, _ FetchCredentials) ([]Post, error) {
 	url := "/r/" + subreddit
 
 	body, err := json.Marshal(map[string]any{
@@ -159,30 +159,55 @@ func (c *ScrolllerClient) FetchNewPosts(subreddit string, since time.Time, _ str
 	sub := result.Data.GetSubreddit
 	log.Printf("scrolller: r/%s → %d posts", subreddit, len(sub.Children.Items))
 
+	now := time.Now().UTC()
 	var posts []Post
-	for _, item := range sub.Children.Items {
+	for i, item := range sub.Children.Items {
 		media := scrolllerMediaItem(item)
 		if media == nil {
 			continue
 		}
 		post := Post{
-			ID:           fmt.Sprintf("scrolller_%d", item.ID),
-			Subreddit:    subreddit,
-			Title:        item.Title,
-			Author:       "",
-			Score:        0,
-			CreatedAt:    time.Now().UTC(), // Scrolller doesn't expose created_at
+			ID:        fmt.Sprintf("scrolller_%d", item.ID),
+			Source:    SourceReddit,
+			Subreddit: subreddit,
+			Title:     item.Title,
+			Author:    "",
+			Score:     0,
+			// Scrolller doesn't expose the real post time, so a synthetic
+			// timestamp is spread across the window since this subreddit was
+			// last checked (item 0 = newest = now) rather than stamping every
+			// item with the same fetch instant. Otherwise every post from one
+			// subreddit's batch lands within milliseconds of each other and
+			// sorts as one solid block instead of interleaving with posts
+			// from other subreddits/sources by real recency.
+			CreatedAt:    syntheticScrolllerTimestamp(i, len(sub.Children.Items), since, now),
 			Permalink:    "https://scrolller.com" + item.URL,
 			MediaItems:   []MediaItem{*media},
-			DiscoveredAt: time.Now().UTC(),
+			DiscoveredAt: now,
 		}
-		// Scrolller doesn't provide timestamps, so we can't filter by since.
-		// Accept all posts and let the dedup in storage handle repeated fetches.
-		_ = since
+		// Scrolller doesn't provide real timestamps, so we can't filter by
+		// since. Accept all posts and let the dedup in storage handle repeated fetches.
 		posts = append(posts, post)
 	}
 
 	return posts, nil
+}
+
+// syntheticScrolllerTimestamp approximates a post's creation time since
+// Scrolller doesn't expose one. Assumes items are returned newest-first
+// (matching a subreddit's default feed order) and spreads them linearly
+// across the time since the subreddit was last checked, falling back to a
+// 30-minute window on the first-ever check.
+func syntheticScrolllerTimestamp(index, total int, since, now time.Time) time.Time {
+	if total <= 1 {
+		return now
+	}
+	window := 30 * time.Minute
+	if !since.IsZero() && now.After(since) {
+		window = now.Sub(since)
+	}
+	frac := float64(index) / float64(total-1)
+	return now.Add(-time.Duration(frac * float64(window)))
 }
 
 // scrolllerMediaItem picks the best media URL from a Scrolller post.
