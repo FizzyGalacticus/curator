@@ -135,7 +135,110 @@ const showTab = (tab) => {
   document.querySelectorAll('.tab-content').forEach((c) => c.classList.toggle('active', c.id === 'tab-' + tab));
 };
 
-// ── Masonry Grid ──────────────────────────────────────────────────────────
+// ── Masonry Grid (virtualized) ───────────────────────────────────────────
+// With thousands of posts in a list, mounting one DOM node per post (as a
+// plain CSS multi-column masonry would) makes every scroll, filter change,
+// and favorite toggle rebuild/relayout the entire grid. Instead we compute
+// tile positions for *all* filtered posts (cheap arithmetic) but only ever
+// mount the handful of tiles near the viewport, adding/removing DOM nodes
+// as the user scrolls.
+const VIRTUAL_BUFFER_PX = 600;
+
+const MASONRY_BREAKPOINTS = [
+  { maxWidth: 380, cols: 1, minColWidth: 140, gap: 6, padding: 6 },
+  { maxWidth: 600, cols: 2, minColWidth: 140, gap: 6, padding: 6 },
+  { maxWidth: 900, cols: 3, minColWidth: 160, gap: 10, padding: 10 },
+  { maxWidth: Infinity, cols: 4, minColWidth: 220, gap: 10, padding: 10 },
+];
+
+const masonry = {
+  layout: [],          // [{post, index, x, y, w, h}], in filteredPosts() order
+  totalHeight: 0,
+  mounted: new Map(),  // post.id -> element currently attached to the grid
+  footerHeight: null,  // measured once, lazily (fixed by the CSS line-clamp)
+  rafPending: false,
+  resizeTimer: null,
+};
+
+const getMasonryBreakpoint = (width) => MASONRY_BREAKPOINTS.find((b) => width <= b.maxWidth);
+
+// Footer height is effectively fixed (title is line-clamped to 2 lines), but
+// we measure it from a live probe rather than hardcoding it so it stays in
+// sync with the CSS.
+const measureFooterHeight = () => {
+  if (masonry.footerHeight != null) return masonry.footerHeight;
+  const probe = document.createElement('div');
+  probe.className = 'tile-footer';
+  probe.style.cssText = 'position:absolute;visibility:hidden;width:220px;left:-9999px;';
+  probe.innerHTML = '<span class="tile-sub">r/probe</span><span class="tile-title">Probe title line one probe title line two probe wrap</span>';
+  document.body.appendChild(probe);
+  masonry.footerHeight = probe.getBoundingClientRect().height || 58;
+  document.body.removeChild(probe);
+  return masonry.footerHeight;
+};
+
+const computeMasonryLayout = (posts) => {
+  const grid = document.getElementById('masonry-grid');
+  const bp = getMasonryBreakpoint(window.innerWidth);
+  const availableWidth = grid.clientWidth - bp.padding * 2;
+  const cols = Math.max(1, Math.min(bp.cols, Math.floor((availableWidth + bp.gap) / (bp.minColWidth + bp.gap))));
+  const colWidth = (availableWidth - bp.gap * (cols - 1)) / cols;
+  const footerHeight = measureFooterHeight();
+  const colHeights = new Array(cols).fill(0);
+  const layout = [];
+
+  posts.forEach((post, index) => {
+    const item = post.media_items[0];
+    const ratio = (item.width && item.height) ? item.width / item.height : 1;
+    const tileHeight = (colWidth / ratio) + footerHeight + 2; // +2 for the 1px top/bottom border
+
+    let col = 0;
+    for (let c = 1; c < cols; c++) {
+      if (colHeights[c] < colHeights[col]) col = c;
+    }
+    const x = bp.padding + col * (colWidth + bp.gap);
+    const y = colHeights[col];
+    layout.push({ post, index, x, y, w: colWidth, h: tileHeight });
+    colHeights[col] = y + tileHeight + bp.gap;
+  });
+
+  masonry.layout = layout;
+  masonry.totalHeight = colHeights.length ? Math.max(...colHeights) : 0;
+};
+
+// Mounts/unmounts tiles based on which fall within the scroll container's
+// viewport (plus a buffer), without touching tiles already correctly mounted.
+const updateVisibleTiles = () => {
+  const container = document.getElementById('tab-media');
+  const grid = document.getElementById('masonry-grid');
+  if (!container || !grid) return;
+
+  const gridTop = grid.offsetTop;
+  const viewTop = container.scrollTop - gridTop - VIRTUAL_BUFFER_PX;
+  const viewBottom = container.scrollTop - gridTop + container.clientHeight + VIRTUAL_BUFFER_PX;
+
+  const wanted = new Set();
+  masonry.layout.forEach((entry) => {
+    if (entry.y + entry.h < viewTop || entry.y > viewBottom) return;
+    wanted.add(entry.post.id);
+    if (!masonry.mounted.has(entry.post.id)) {
+      const el = buildTile(entry.post, entry.index);
+      el.style.setProperty('--tx', `${entry.x}px`);
+      el.style.setProperty('--ty', `${entry.y}px`);
+      el.style.width = `${entry.w}px`;
+      grid.appendChild(el);
+      masonry.mounted.set(entry.post.id, el);
+    }
+  });
+
+  masonry.mounted.forEach((el, id) => {
+    if (!wanted.has(id)) {
+      el.remove();
+      masonry.mounted.delete(id);
+    }
+  });
+};
+
 const renderGrid = () => {
   const grid = document.getElementById('masonry-grid');
   const empty = document.getElementById('media-empty');
@@ -146,19 +249,26 @@ const renderGrid = () => {
 
   document.getElementById('post-count').textContent = `${posts.length} post${posts.length !== 1 ? 's' : ''}`;
 
+  // A fresh layout invalidates every tile's position, so start clean; the
+  // set of *mounted* tiles stays small regardless of list size.
+  masonry.mounted.forEach((el) => el.remove());
+  masonry.mounted.clear();
+
   if (posts.length === 0) {
-    grid.innerHTML = '';
+    grid.style.height = '';
     empty.hidden = false;
     return;
   }
 
   empty.hidden = true;
-  grid.innerHTML = '';
 
-  posts.forEach((post, idx) => {
-    const el = buildTile(post, idx);
-    grid.appendChild(el);
-  });
+  // Skip layout math while the media tab isn't visible (clientWidth would
+  // read 0); the tab-switch handler re-renders when it becomes visible again.
+  if (!document.getElementById('tab-media').classList.contains('active')) return;
+
+  computeMasonryLayout(posts);
+  grid.style.height = `${masonry.totalHeight}px`;
+  updateVisibleTiles();
 };
 
 const buildTile = (post, postIndex) => {
@@ -694,6 +804,7 @@ const loadListView = async () => {
 const showHome = async () => {
   state.view = 'home';
   showView('home');
+  document.getElementById('view-home').scrollTop = 0;
   try {
     state.lists = await api.getLists();
   } catch (e) {
@@ -721,6 +832,7 @@ const openList = async (listId) => {
   document.querySelectorAll('.filter-btn').forEach((b) => b.classList.toggle('active', b.dataset.filter === 'all'));
   showTab('media');
   showView('list');
+  document.getElementById('tab-media').scrollTop = 0;
 
   document.getElementById('media-loading').hidden = false;
 
@@ -807,8 +919,30 @@ const setupEvents = () => {
       if (btn.dataset.tab === 'config') {
         renderAllIdentifierLists();
         renderStatusPanel();
+      } else if (btn.dataset.tab === 'media') {
+        // Re-render in case the window was resized while this tab was hidden
+        // (clientWidth reads 0 while display:none, so layout is skipped then).
+        renderGrid();
       }
     });
+  });
+
+  // Masonry virtualization: mount/unmount tiles as the grid scrolls, and
+  // recompute the layout (column count, tile sizes) when the viewport resizes.
+  document.getElementById('tab-media').addEventListener('scroll', () => {
+    if (masonry.rafPending) return;
+    masonry.rafPending = true;
+    requestAnimationFrame(() => {
+      masonry.rafPending = false;
+      updateVisibleTiles();
+    });
+  }, { passive: true });
+
+  window.addEventListener('resize', () => {
+    clearTimeout(masonry.resizeTimer);
+    masonry.resizeTimer = setTimeout(() => {
+      if (state.view === 'list') renderGrid();
+    }, 150);
   });
 
   // Filter buttons

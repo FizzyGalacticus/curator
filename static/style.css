@@ -197,15 +197,14 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 #tab-media { overflow-x: hidden; overflow-y: auto; }
 
 .masonry-grid {
-  padding: 10px;
-  columns: 4 220px;
-  column-gap: 10px;
+  position: relative;
 }
 
 .masonry-item {
-  break-inside: avoid;
-  margin-bottom: 10px;
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translate(var(--tx, 0), var(--ty, 0));
   cursor: pointer;
   border-radius: var(--radius);
   overflow: hidden;
@@ -214,7 +213,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   transition: transform var(--transition), box-shadow var(--transition);
 }
 
-.masonry-item:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+.masonry-item:hover { transform: translate(var(--tx, 0), calc(var(--ty, 0) - 2px)); box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
 
 .masonry-item img,
 .masonry-item video {
@@ -601,17 +600,9 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .viewer-post-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
 /* ── Responsive ── */
-@media (max-width: 900px) {
-  .masonry-grid { columns: 3 160px; }
-}
 @media (max-width: 600px) {
-  .masonry-grid { columns: 2 140px; padding: 6px; column-gap: 6px; }
-  .masonry-item { margin-bottom: 6px; }
   .toolbar { padding: 0 8px; }
   .filter-btn { padding: 4px 8px; font-size: 12px; }
   .viewer-post-nav { gap: 8px; padding: 6px; }
   .viewer-post-btn { padding: 5px 10px; font-size: 12px; }
-}
-@media (max-width: 380px) {
-  .masonry-grid { columns: 1; }
 }
