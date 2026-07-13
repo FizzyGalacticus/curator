@@ -55,7 +55,14 @@ func TestScrolllerFetchNewPosts_Image(t *testing.T) {
 		},
 	}
 
+	var gotSortBy any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			gotSortBy = req.Variables["sortBy"]
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(mockScrolllerResponse(posts))
 	}))
@@ -65,6 +72,9 @@ func TestScrolllerFetchNewPosts_Image(t *testing.T) {
 	result, err := client.FetchNewPosts("testsubreddit", time.Time{}, FetchCredentials{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotSortBy != "HOT" {
+		t.Errorf("sortBy = %v, want HOT", gotSortBy)
 	}
 	if len(result) != 1 {
 		t.Fatalf("expected 1 post, got %d", len(result))

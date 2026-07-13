@@ -17,8 +17,11 @@ type FetchCredentials struct {
 	FlickrAPIKey  string
 }
 
-// PostFetcher abstracts new-post retrieval so the scheduler can be tested
-// without a live network connection.
+// PostFetcher abstracts post retrieval so the scheduler can be tested without
+// a live network connection. Sources that rank by popularity (Reddit/Scrolller
+// hot, Lemmy Hot) return the current hot posts and ignore `since`, relying on
+// per-list ID dedup in storage; sources with no popularity ranking (Flickr)
+// use `since` to return only posts published after it.
 type PostFetcher interface {
 	FetchNewPosts(query string, since time.Time, creds FetchCredentials) ([]Post, error)
 }

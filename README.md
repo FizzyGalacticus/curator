@@ -30,8 +30,8 @@ A curation list can combine three independent source categories. All three are c
 
 ### Reddit: Scrolller (primary) → Reddit RSS (fallback)
 
-1. **Scrolller** (primary) — queries Scrolller's public GraphQL API (`api.scrolller.com/admin`) for the subreddit's most recent items. No authentication required. Scrolller doesn't expose post timestamps, so all returned items are accepted (no `since` cutoff) and each is given a synthetic `created_at` spread linearly across the time since that subreddit was last checked — assuming Scrolller's default feed order is newest-first — rather than stamping every item in the batch with the same fetch instant. Otherwise a whole subreddit's ~50 items would sort as one solid block in the UI instead of interleaving with posts from other subreddits/sources by real recency.
-2. **Reddit RSS** (fallback) — if Scrolller's request fails, falls back to Reddit's public RSS feed (`/r/{sub}/new.rss`). Only entries newer than the subreddit's last-checked time are kept.
+1. **Scrolller** (primary) — queries Scrolller's public GraphQL API (`api.scrolller.com/admin`) for the subreddit's hot-ranked items (`sortBy: HOT`). No authentication required. Scrolller doesn't expose post timestamps, so all returned items are accepted (no `since` cutoff) and each is given a synthetic `created_at` spread linearly across the time since that subreddit was last checked — using hot rank as a recency proxy (hottest = now) — rather than stamping every item in the batch with the same fetch instant. Otherwise a whole subreddit's ~50 items would sort as one solid block in the UI instead of interleaving with posts from other subreddits/sources.
+2. **Reddit RSS** (fallback) — if Scrolller's request fails, falls back to Reddit's public hot-ranked RSS feed (`/r/{sub}/hot.rss`). All entries with usable media are kept — hot posts are routinely older than the last-checked time, so there is no `since` cutoff; per-list dedup by post ID prevents repeats across passes.
 
 ### Scrolller media resolution
 
@@ -65,7 +65,7 @@ A group's URL slug (e.g. `blackandwhite` from `flickr.com/groups/blackandwhite/p
 
 ### Lemmy media resolution
 
-Each `"community@instance"` identifier is split into its community name and instance host, then queried against that instance's public `GET /api/v3/post/list?community_name={name}&sort=New` endpoint — no authentication needed. A post's `url` field is classified as image/gif/video using the same URL-suffix heuristics as the Reddit RSS fetcher. Both `post.nsfw` and `community.nsfw` are checked and skipped as a defensive safety net. Featured/pinned posts can appear out of chronological order even with `sort=New`, so every post's `published` time is checked against the community's last-checked time rather than stopping at the first post that looks old enough.
+Each `"community@instance"` identifier is split into its community name and instance host, then queried against that instance's public `GET /api/v3/post/list?community_name={name}&sort=Hot` endpoint — no authentication needed. A post's `url` field is classified as image/gif/video using the same URL-suffix heuristics as the Reddit RSS fetcher. Both `post.nsfw` and `community.nsfw` are checked and skipped as a defensive safety net. Hot-ranked posts are routinely older than the community's last-checked time, so there is no `since` cutoff; per-list dedup by post ID prevents repeats across passes.
 
 ---
 
@@ -231,7 +231,7 @@ For non-Reddit posts, `{subreddit}` is a Flickr group slug or a Lemmy `community
 - Waits 2 seconds between every individual check (across all lists and all sources combined) to respect rate limits.
 - A manual refresh (via API or UI) resets the ticker and re-checks **every** list and source, not just the one it was triggered from.
 - After each full pass, prunes non-favorited posts older than `max_post_age_days` in every list (0 = never prune; this setting is global, not per-list, not per-source).
-- Reddit RSS, Flickr, and Lemmy results are filtered to posts newer than the identifier's `last_checked` time (per list). Scrolller has no real timestamps to filter by, so all returned items are accepted and given a synthetic `created_at` spread across the since-last-checked window instead (see "Scrolller media resolution" above) — this keeps the UI's date-sorted view interleaving properly across subreddits/sources rather than showing one block per subreddit. Deduplication by post ID and primary media URL prevents repeat storage either way, scoped to each list.
+- Only Flickr results are filtered to photos newer than the identifier's `last_checked` time (per list) — Flickr group pools have no popularity ranking. Reddit RSS, Scrolller, and Lemmy return hot-ranked posts, which are routinely older than `last_checked`, so they are accepted without a `since` cutoff. Scrolller has no real timestamps at all, so its items are given a synthetic `created_at` spread across the since-last-checked window (see "Scrolller media resolution" above) — this keeps the UI's date-sorted view interleaving properly across subreddits/sources rather than showing one block per subreddit. Deduplication by post ID and primary media URL prevents repeat storage, scoped to each list.
 
 ---
 
@@ -345,7 +345,7 @@ static/
 
 External services called at runtime:
 - `api.scrolller.com` — Scrolller's public GraphQL API (`/admin`), primary Reddit post source
-- `www.reddit.com` — RSS feed (`/r/{sub}/new.rss`), fallback Reddit post source
+- `www.reddit.com` — RSS feed (`/r/{sub}/hot.rss`), fallback Reddit post source
 - `api.redgifs.com` — RedGifs public API (`/v2/gifs/{slug}`)
 - `api.imgur.com` — Imgur album API (`/3/album/{hash}/images`, requires free Client ID)
 - `api.flickr.com` — Flickr REST API (`flickr.urls.lookupGroup`, `flickr.groups.pools.getPhotos`), requires a free API key

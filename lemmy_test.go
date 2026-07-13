@@ -96,10 +96,10 @@ func TestLemmyFetchNewPosts_SkipsNonMediaAndNSFW(t *testing.T) {
 	}
 }
 
-func TestLemmyFetchNewPosts_SinceFilter(t *testing.T) {
+func TestLemmyFetchNewPosts_HotSortIgnoresSince(t *testing.T) {
 	now := time.Now().UTC()
-	// Simulates a featured/pinned post (old) appearing before a newer post,
-	// which is real observed Lemmy API behavior even with sort=New.
+	// Hot-ranked posts are routinely older than the last check time, so
+	// `since` must not filter anything — dedup happens by ID in storage.
 	resp := lemmyPostListResponse{
 		Posts: []lemmyPostView{
 			{
@@ -119,7 +119,9 @@ func TestLemmyFetchNewPosts_SinceFilter(t *testing.T) {
 		},
 	}
 
+	var gotSort string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSort = r.URL.Query().Get("sort")
 		json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
@@ -130,8 +132,11 @@ func TestLemmyFetchNewPosts_SinceFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchNewPosts: %v", err)
 	}
-	if len(posts) != 1 || posts[0].ID != "lemmy_lemmy.world_2" {
-		t.Errorf("since filter: want only the newer post, got %v", posts)
+	if gotSort != "Hot" {
+		t.Errorf("sort = %q, want Hot", gotSort)
+	}
+	if len(posts) != 2 {
+		t.Errorf("want both posts kept despite predating since, got %v", posts)
 	}
 }
 

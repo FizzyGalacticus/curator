@@ -51,9 +51,11 @@ type lemmyPostListResponse struct {
 
 // FetchNewPosts implements PostFetcher for Lemmy. identifier is a
 // "community@instance" string (an optional leading "!" is accepted and
-// stripped). creds is unused — Lemmy's public post-listing API needs no
-// credential.
-func (c *LemmyClient) FetchNewPosts(identifier string, since time.Time, _ FetchCredentials) ([]Post, error) {
+// stripped). Posts come from the community's Hot listing, ranked by
+// popularity rather than recency, so `since` is ignored — repeats across
+// passes are deduplicated by ID in storage. creds is unused — Lemmy's public
+// post-listing API needs no credential.
+func (c *LemmyClient) FetchNewPosts(identifier string, _ time.Time, _ FetchCredentials) ([]Post, error) {
 	community, instance, ok := splitLemmyIdentifier(identifier)
 	if !ok {
 		return nil, fmt.Errorf("lemmy: invalid identifier %q, expected \"community@instance\"", identifier)
@@ -66,7 +68,7 @@ func (c *LemmyClient) FetchNewPosts(identifier string, since time.Time, _ FetchC
 	// type_ is intentionally omitted: its valid values are All|Local|Subscribed|
 	// ModeratorView (NOT "Community" as might be assumed), and community_name
 	// alone already scopes the query to the requested community.
-	url := fmt.Sprintf("%s/api/v3/post/list?community_name=%s&sort=New&limit=50", base, community)
+	url := fmt.Sprintf("%s/api/v3/post/list?community_name=%s&sort=Hot&limit=50", base, community)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -101,12 +103,6 @@ func (c *LemmyClient) FetchNewPosts(identifier string, since time.Time, _ FetchC
 		}
 		publishedAt, err := time.Parse(time.RFC3339Nano, pv.Post.Published)
 		if err != nil {
-			continue
-		}
-		// Featured/pinned posts can appear out of chronological order even
-		// with sort=New, so every post is checked against `since` rather than
-		// stopping at the first one that looks old enough.
-		if !since.IsZero() && !publishedAt.After(since) {
 			continue
 		}
 		posts = append(posts, Post{

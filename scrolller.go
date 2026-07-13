@@ -102,7 +102,9 @@ type scrolllerResponse struct {
 	} `json:"errors"`
 }
 
-// FetchNewPosts implements PostFetcher for Scrolller.
+// FetchNewPosts implements PostFetcher for Scrolller. Posts come from the
+// subreddit's HOT ranking, so `since` is only used to spread synthetic
+// timestamps — repeats across passes are deduplicated by ID in storage.
 // The creds parameter is unused but required by the interface.
 func (c *ScrolllerClient) FetchNewPosts(subreddit string, since time.Time, _ FetchCredentials) ([]Post, error) {
 	url := "/r/" + subreddit
@@ -113,7 +115,7 @@ func (c *ScrolllerClient) FetchNewPosts(subreddit string, since time.Time, _ Fet
 			"url":      url,
 			"iterator": nil,
 			"filter":   nil,
-			"sortBy":   nil,
+			"sortBy":   "HOT",
 			"limit":    50,
 		},
 		"authorization": nil,
@@ -175,11 +177,11 @@ func (c *ScrolllerClient) FetchNewPosts(subreddit string, since time.Time, _ Fet
 			Score:     0,
 			// Scrolller doesn't expose the real post time, so a synthetic
 			// timestamp is spread across the window since this subreddit was
-			// last checked (item 0 = newest = now) rather than stamping every
+			// last checked (item 0 = hottest = now) rather than stamping every
 			// item with the same fetch instant. Otherwise every post from one
 			// subreddit's batch lands within milliseconds of each other and
 			// sorts as one solid block instead of interleaving with posts
-			// from other subreddits/sources by real recency.
+			// from other subreddits/sources.
 			CreatedAt:    syntheticScrolllerTimestamp(i, len(sub.Children.Items), since, now),
 			Permalink:    "https://scrolller.com" + item.URL,
 			MediaItems:   []MediaItem{*media},
@@ -194,9 +196,9 @@ func (c *ScrolllerClient) FetchNewPosts(subreddit string, since time.Time, _ Fet
 }
 
 // syntheticScrolllerTimestamp approximates a post's creation time since
-// Scrolller doesn't expose one. Assumes items are returned newest-first
-// (matching a subreddit's default feed order) and spreads them linearly
-// across the time since the subreddit was last checked, falling back to a
+// Scrolller doesn't expose one. Items arrive in HOT-rank order, so rank is
+// used as a recency proxy: posts are spread linearly across the time since
+// the subreddit was last checked (hottest = now), falling back to a
 // 30-minute window on the first-ever check.
 func syntheticScrolllerTimestamp(index, total int, since, now time.Time) time.Time {
 	if total <= 1 {

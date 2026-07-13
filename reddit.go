@@ -172,12 +172,14 @@ type redditPostData struct {
 	CrosspostParentList []redditPostData `json:"crosspost_parent_list,omitempty"`
 }
 
-// FetchNewPosts retrieves posts from a subreddit (or combined "a+b+c" multireddit)
-// published after `since`. creds.ImgurClientID is optional; when set, Imgur
-// albums are fully expanded.
-func (c *RedditClient) FetchNewPosts(subreddit string, since time.Time, creds FetchCredentials) ([]Post, error) {
+// FetchNewPosts retrieves the current hot posts from a subreddit (or combined
+// "a+b+c" multireddit). Hot posts are ranked by popularity, not recency, so
+// `since` is ignored — the same post appearing across passes is deduplicated
+// by ID in storage. creds.ImgurClientID is optional; when set, Imgur albums
+// are fully expanded.
+func (c *RedditClient) FetchNewPosts(subreddit string, _ time.Time, creds FetchCredentials) ([]Post, error) {
 	imgurClientID := creds.ImgurClientID
-	url := fmt.Sprintf("%s/r/%s/new.rss?limit=100", c.baseURL, subreddit)
+	url := fmt.Sprintf("%s/r/%s/hot.rss?limit=100", c.baseURL, subreddit)
 
 	feed, err := c.fetchRSSFeed(url)
 	if err != nil {
@@ -190,13 +192,10 @@ func (c *RedditClient) FetchNewPosts(subreddit string, since time.Time, creds Fe
 		if !ok {
 			continue
 		}
-		if !since.IsZero() && !post.CreatedAt.After(since) {
-			continue
-		}
 		posts = append(posts, post)
 	}
 
-	log.Printf("r/%s: %d RSS entries → %d media posts (since %s)", subreddit, len(feed.Entries), len(posts), since.Format(time.RFC3339))
+	log.Printf("r/%s: %d RSS entries → %d media posts", subreddit, len(feed.Entries), len(posts))
 	return posts, nil
 }
 

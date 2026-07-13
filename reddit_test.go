@@ -639,8 +639,10 @@ func TestFetchNewPosts_MockServer(t *testing.T) {
 	}
 }
 
-func TestFetchNewPosts_SinceFilter(t *testing.T) {
+func TestFetchNewPosts_HotFeedIgnoresSince(t *testing.T) {
 	now := time.Now().UTC()
+	// Hot-ranked posts are routinely older than the last check time, so
+	// `since` must not filter anything — dedup happens by ID in storage.
 	feed := mockRSSFeed([]struct{ id, sub, title, author, permalink, mediaURL, thumbnail, published string }{
 		{
 			id: "old", sub: "pics", title: "Old Post", author: "u1",
@@ -658,7 +660,9 @@ func TestFetchNewPosts_SinceFilter(t *testing.T) {
 		},
 	})
 
+	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
 		fmt.Fprint(w, feed)
 	}))
 	defer srv.Close()
@@ -669,8 +673,11 @@ func TestFetchNewPosts_SinceFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchNewPosts: %v", err)
 	}
-	if len(posts) != 1 || posts[0].ID != "new" {
-		t.Errorf("since filter: want [new], got %v", posts)
+	if gotPath != "/r/pics/hot.rss" {
+		t.Errorf("request path = %q, want /r/pics/hot.rss", gotPath)
+	}
+	if len(posts) != 2 {
+		t.Errorf("want both posts kept despite predating since, got %v", posts)
 	}
 }
 
